@@ -19,10 +19,26 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function ProposalPreview({ markdown, dir, lang }: { markdown: string; dir: 'rtl' | 'ltr'; lang: string }) {
+function ProposalPreview({
+  markdown,
+  dir,
+  lang,
+}: {
+  markdown: string;
+  dir: 'rtl' | 'ltr';
+  lang: string;
+}) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/20 p-6" dir={dir} lang={lang} style={{ unicodeBidi: 'plaintext' }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} className="max-w-none text-sm leading-relaxed text-white/90">
+    <div
+      className="rounded-2xl border border-white/10 bg-black/20 p-6"
+      dir={dir}
+      lang={lang}
+      style={{ unicodeBidi: 'plaintext' }}
+    >
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        className="max-w-none text-sm leading-relaxed text-white/90"
+      >
         {markdown}
       </ReactMarkdown>
     </div>
@@ -30,8 +46,10 @@ function ProposalPreview({ markdown, dir, lang }: { markdown: string; dir: 'rtl'
 }
 
 export default function GetStartedClient() {
+  // UI language only (never auto-switch on upload)
   const { lang } = useLang();
 
+  // Content language used for chat/proposal generation (can differ from UI lang)
   const [contentLang, setContentLang] = useState<Lang>(lang);
 
   const [rfpText, setRfpText] = useState('');
@@ -47,11 +65,13 @@ export default function GetStartedClient() {
   const dir: 'rtl' | 'ltr' = isRtl ? 'rtl' : 'ltr';
 
   useEffect(() => {
+    // Keep contentLang in sync with UI only when there is no loaded RFP.
     if (!rfpText.trim()) setContentLang(lang);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang]);
 
   useEffect(() => {
+    // Welcome message (always first) - depends on UI language
     setMessages((prev) => {
       const rest = prev.filter((_, i) => i !== 0);
 
@@ -88,9 +108,11 @@ export default function GetStartedClient() {
       const extracted = (data.text || '') as string;
       setRfpText(extracted);
 
+      // Detect content language WITHOUT changing the whole UI language.
       if (data?.detectedLang === 'ar') setContentLang('ar');
       else if (data?.detectedLang === 'en') setContentLang('en');
 
+      // Optional: if user uploads a file, clear previous proposal
       setProposal('');
       localStorage.removeItem('last_proposal');
       localStorage.removeItem('last_proposal_lang');
@@ -160,6 +182,7 @@ export default function GetStartedClient() {
       const md = (data.proposalMarkdown as string) || '';
       setProposal(md);
 
+      // For /print fallback
       localStorage.setItem('last_proposal', md);
       localStorage.setItem('last_proposal_lang', contentLang);
     } catch {
@@ -190,6 +213,7 @@ export default function GetStartedClient() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch {
+      // Fallback for Arabic or if puppeteer fails
       window.open('/print', '_blank');
     }
   }
@@ -234,12 +258,14 @@ export default function GetStartedClient() {
             />
 
             {isExtracting ? (
-              <div className="text-xs text-white/60">{lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...'}</div>
+              <div className="text-xs text-white/60">
+                {lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...'}
+              </div>
             ) : null}
 
             <label className="block text-sm font-bold text-white/90">{t(lang, 'rfp_paste')}</label>
 
-            {/* ✅ FIX: Direction + unicode bidi so Arabic from PDF displays correctly */}
+            {/* ✅ FIX: Direction + unicode-bidi so Arabic (RTL) displays correctly */}
             <textarea
               value={rfpText}
               onChange={(e) => setRfpText(e.target.value)}
@@ -258,12 +284,15 @@ export default function GetStartedClient() {
               onClick={() => generate('fresh')}
               className={
                 'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow ' +
-                (canGenerate && !isGenerating ? 'bg-blue-600/80 hover:bg-blue-600' : 'cursor-not-allowed bg-white/10')
+                (canGenerate && !isGenerating
+                  ? 'bg-blue-600/80 hover:bg-blue-600'
+                  : 'cursor-not-allowed bg-white/10')
               }
             >
               {isGenerating ? (lang === 'ar' ? 'جاري الإنشاء...' : 'Generating...') : t(lang, 'generate_btn')}
             </button>
 
+            {/* Small hint about detected content language */}
             {rfpText.trim() ? (
               <div className="text-xs text-white/50">
                 {lang === 'ar'
@@ -278,7 +307,10 @@ export default function GetStartedClient() {
           <div className="glass-lite rounded-2xl p-4">
             <div className="h-64 overflow-auto pr-1">
               {messages.map((m, idx) => (
-                <div key={idx} className={'mb-3 flex ' + (m.role === 'user' ? 'justify-end' : 'justify-start')}>
+                <div
+                  key={idx}
+                  className={'mb-3 flex ' + (m.role === 'user' ? 'justify-end' : 'justify-start')}
+                >
                   <div
                     dir={dir}
                     style={{ unicodeBidi: 'plaintext' }}
@@ -323,14 +355,18 @@ export default function GetStartedClient() {
         <div className="glass rounded-2xl p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="text-lg font-extrabold">{lang === 'ar' ? 'العرض الفني' : 'Technical Proposal'}</div>
+              <div className="text-lg font-extrabold">
+                {lang === 'ar' ? 'العرض الفني' : 'Technical Proposal'}
+              </div>
               <div className="text-sm text-white/70">{t(lang, 'proposal_ready')}</div>
             </div>
 
             <div className="flex flex-wrap gap-2">
               <button
                 disabled={!proposal}
-                onClick={() => document.getElementById('proposal_preview')?.scrollIntoView({ behavior: 'smooth' })}
+                onClick={() =>
+                  document.getElementById('proposal_preview')?.scrollIntoView({ behavior: 'smooth' })
+                }
                 className={
                   'rounded-xl px-4 py-2 text-sm font-bold ' +
                   (proposal ? 'bg-white/10 hover:bg-white/15' : 'cursor-not-allowed bg-white/5 text-white/40')
@@ -344,7 +380,9 @@ export default function GetStartedClient() {
                 onClick={() => generate('regen')}
                 className={
                   'rounded-xl px-4 py-2 text-sm font-bold ' +
-                  (proposal && !isGenerating ? 'bg-blue-600/70 hover:bg-blue-600' : 'cursor-not-allowed bg-white/5 text-white/40')
+                  (proposal && !isGenerating
+                    ? 'bg-blue-600/70 hover:bg-blue-600'
+                    : 'cursor-not-allowed bg-white/5 text-white/40')
                 }
               >
                 {t(lang, 'regenerate')}

@@ -15,57 +15,123 @@ function isMostlyArabic(s: string) {
 function cleanText(s: string) {
   return s
     .replace(/\u0000/g, "")
-    .replace(/\u00A0/g, " ") // NBSP -> normal space
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
-// ✅ هل النص طالع "حروف عربي مفصولة"؟
-function looksLikeSpacedArabic(s: string) {
-  const letters = (s.match(/[\u0600-\u06FF]/g) || []).length;
-  const pairs = (s.match(/[\u0600-\u06FF] [\u0600-\u06FF]/g) || []).length;
-  return letters > 80 && pairs / letters > 0.15;
-}
+function fixArabicSpacing(s: string) {
+  let out = s;
 
-// ✅ يلغي المسافة الواحدة بين الحروف العربية، ويحافظ على مسافات الكلمات (2+)
-function fixSpacedArabicFromPdf(s: string) {
-  const PLACEHOLDER = "\uE000"; // placeholder مؤقت
-  let t = s.replace(/ {2,}/g, PLACEHOLDER); // احفظ مسافات الكلمات
-
-  // Arabic ranges + presentation forms
-  const AR =
-    "\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF";
-
-  const re = new RegExp(`([${AR}]) ([${AR}])`, "g");
-
-  // كرر لحد ما تخلص جميع الحالات
-  while (re.test(t)) {
-    t = t.replace(re, "$1$2");
+  // دمج الحروف العربية اللي طالع بينها مسافات (حالة PDF glyph-by-glyph)
+  for (let i = 0; i < 4; i++) {
+    out = out.replace(
+      /([\u0600-\u06FF])\s+([\u0600-\u06FF])/g,
+      "$1$2"
+    );
   }
 
-  // رجّع مسافات الكلمات
-  t = t.replace(new RegExp(PLACEHOLDER, "g"), " ");
+  // تنظيف مسافات قبل/بعد علامات الترقيم العربية
+  out = out.replace(/\s+([،؛؟])/g, "$1");
+  out = out.replace(/([،؛؟])\s*/g, "$1 ");
 
-  // تنظيف بسيط
-  t = t.replace(/ *\n */g, "\n");
-  return t;
+  return out;
 }
 
 async function pdfToText(fileBuffer: Buffer) {
   // ✅ require داخل الفنكشن (حتى ما ينفذ وقت build/collect page data)
   const require = createRequire(import.meta.url);
-  const pdfParse: any = require("pdf-parse/lib/pdf-parse.js"); // مهم
+  const pdfParse: any = require("pdf-parse/lib/pdf-parse.js");
 
-  const result = await pdfParse(fileBuffer);
-  let text = result?.text || "";
+  // ترتيب النص حسب الإحداثيات (RTL للعربي)
+  const pagerender = async (pageData: any) => {
+    const textContent = await pageData.getTextContent({
+      normalizeWhitespace: false,
+      disableCombineTextItems: false,
+    });
 
-  // ✅ طبق إصلاح العربي فقط عند الحاجة
-  if (looksLikeSpacedArabic(text)) {
-    text = fixSpacedArabicFromPdf(text);
-  }
+    const items = (textContent?.items || []) as any[];
 
-  return cleanText(text);
+    type Item = {
+      str: string;
+      x: number;
+      y: number;
+      left: number;
+      right: number;
+    };
+
+    const mapped: Item[] = items
+      .map((it) => {
+        const str = String(it?.str ?? "");
+        if (!str.trim()) return null;
+
+        const t = it?.transform;
+        const x = Array.isArray(t) ? Number(t[4] ?? 0) : 0;
+        const y = Array.isArray(t) ? Number(t[5] ?? 0) : 0;
+
+        // pdf.js غالباً يعطي width
+        const w =
+          typeof it?.width === "number"
+            ? it.width
+            : Math.max(2, str.length) * 3;
+
+        return {
+          str,
+          x,
+          y,
+          left: x,
+          right: x + w,
+        } as Item;
+      })
+      .filter(Boolean) as Item[];
+
+    // Group by lines using Y buckets
+    const buckets = new Map<number, Item[]>();
+    const bucketY = (y: number) => Math.round(y / 3) * 3; // tolerance
+
+    for (const it of mapped) {
+      const key = bucketY(it.y);
+      const arr = buckets.get(key) ?? [];
+      arr.push(it);
+      buckets.set(key, arr);
+    }
+
+    const ys = Array.from(buckets.keys()).sort((a, b) => b - a); // top -> bottom
+    const lines: string[] = [];
+
+    for (const y of ys) {
+      const lineItems = buckets.get(y)!;
+
+      const sample = lineItems.map((i) => i.str).join("");
+      const rtl = isMostlyArabic(sample);
+
+      // sort by X (RTL: right->left)
+      lineItems.sort((a, b) => (rtl ? b.x - a.x : a.x - b.x));
+
+      let out = "";
+      let prev: Item | null = null;
+
+      for (const cur of lineItems) {
+        if (prev) {
+          const gap = rtl ? prev.left - cur.right : cur.left - prev.right;
+          // لو في فراغ واضح بين العناصر، نحط مسافة
+          if (gap > 4) out += " ";
+        }
+        out += cur.str;
+        prev = cur;
+      }
+
+      lines.push(out);
+    }
+
+    return lines.join("\n");
+  };
+
+  const result = await pdfParse(fileBuffer, { pagerender });
+  const text = cleanText(result?.text || "");
+
+  // إصلاحات إضافية للعربي
+  return cleanText(fixArabicSpacing(text));
 }
 
 async function docxToText(fileBuffer: Buffer) {
@@ -93,7 +159,6 @@ export async function POST(req: Request) {
 
     const form = await req.formData();
     const file = form.get("file") as File | null;
-
     if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
 
     const bytes = Buffer.from(await file.arrayBuffer());
