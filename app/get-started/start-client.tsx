@@ -45,13 +45,117 @@ function ProposalPreview({
   );
 }
 
+function isMostlyArabic(s: string) {
+  const ar = (s.match(/[\u0600-\u06FF]/g) || []).length;
+  const total = (s.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
+  return total > 0 && ar / total > 0.25;
+}
+
+function cleanText(s: string) {
+  return s
+    .replace(/\u0000/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// OCR PDF in-browser (client-side) using PDF.js + Tesseract.js (v5 API)
+async function ocrPdfInBrowser(
+  file: File,
+  opts: {
+    onStatus?: (s: string) => void;
+    maxPages?: number;
+    langHint?: Lang;
+  } = {}
+) {
+  const { onStatus, maxPages = 20, langHint = 'ar' } = opts;
+
+  onStatus?.('Loading PDF engine...');
+
+  const pdfjs: any =
+    (await import('pdfjs-dist/legacy/build/pdf.mjs').catch(() =>
+      import('pdfjs-dist/build/pdf.mjs')
+    )) as any;
+
+  const workerSrc = new URL(
+    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+    import.meta.url
+  ).toString();
+
+  try {
+    pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+  } catch {
+    // ignore
+  }
+
+  const data = new Uint8Array(await file.arrayBuffer());
+  const loadingTask = pdfjs.getDocument({ data });
+  const pdf = await loadingTask.promise;
+  const total = Math.min(pdf.numPages || 1, maxPages);
+
+  onStatus?.('Loading OCR engine...');
+
+  const { createWorker } = await import('tesseract.js');
+  const ocrLang = langHint === 'ar' ? 'ara+eng' : 'eng+ara';
+
+  /**
+   * Tesseract.js v5 API:
+   * 1. Languages are passed as the first argument.
+   * 2. The worker index is the second.
+   * 3. The options object (with logger) is the third.
+   */
+  const worker = await createWorker(ocrLang, 1, {
+    logger: (m: any) => {
+      if (m?.status === 'recognizing text' && typeof m?.progress === 'number') {
+        onStatus?.(`OCR… ${Math.round(m.progress * 100)}%`);
+      }
+    },
+  });
+
+  try {
+    // Note: load(), loadLanguage(), and initialize() are handled automatically in v5
+    await worker.setParameters({
+      preserve_interword_spaces: '1',
+    });
+
+    let out = '';
+
+    for (let i = 1; i <= total; i++) {
+      onStatus?.(`OCR page ${i}/${total}...`);
+
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('canvas_context_failed');
+
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      const dataUrl = canvas.toDataURL('image/png');
+      const result = await worker.recognize(dataUrl);
+      const text = result?.data?.text || '';
+
+      out += `\n\n${text}`;
+
+      try {
+        page.cleanup?.();
+      } catch {}
+    }
+
+    return cleanText(out);
+  } finally {
+    try {
+      await worker.terminate();
+    } catch {}
+  }
+}
+
 export default function GetStartedClient() {
-  // UI language only (never auto-switch on upload)
   const { lang } = useLang();
-
-  // Content language used for chat/proposal generation (can differ from UI lang)
   const [contentLang, setContentLang] = useState<Lang>(lang);
-
   const [rfpText, setRfpText] = useState('');
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -59,22 +163,19 @@ export default function GetStartedClient() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isChatting, setIsChatting] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractStatus, setExtractStatus] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const isRtl = contentLang === 'ar';
   const dir: 'rtl' | 'ltr' = isRtl ? 'rtl' : 'ltr';
 
   useEffect(() => {
-    // Keep contentLang in sync with UI only when there is no loaded RFP.
     if (!rfpText.trim()) setContentLang(lang);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lang]);
+  }, [lang, rfpText]);
 
   useEffect(() => {
-    // Welcome message (always first) - depends on UI language
     setMessages((prev) => {
       const rest = prev.filter((_, i) => i !== 0);
-
       const welcome: ChatMsg = {
         role: 'assistant',
         content:
@@ -82,7 +183,6 @@ export default function GetStartedClient() {
             ? 'مرحبًا! ارفع ملف الـRFP أو الصق النص، ثم اسألني أي شيء قبل إنشاء العرض الفني.'
             : 'Hi! Upload the RFP or paste its text, then ask me anything before generating your proposal.',
       };
-
       return [welcome, ...rest];
     });
   }, [lang]);
@@ -97,7 +197,13 @@ export default function GetStartedClient() {
     if (!file) return;
 
     setIsExtracting(true);
+    setExtractStatus(lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...');
+
     try {
+      const name = (file.name || '').toLowerCase();
+      const type = (file.type || '').toLowerCase();
+      const isPdf = name.endsWith('.pdf') || type === 'application/pdf';
+
       const fd = new FormData();
       fd.append('file', file);
 
@@ -106,24 +212,33 @@ export default function GetStartedClient() {
       if (!res.ok) throw new Error(data?.error || 'extract_failed');
 
       const extracted = (data.text || '') as string;
-      setRfpText(extracted);
+      const detected = (data?.detectedLang as Lang | undefined) || (isMostlyArabic(extracted) ? 'ar' : 'en');
 
-      // Detect content language WITHOUT changing the whole UI language.
-      if (data?.detectedLang === 'ar') setContentLang('ar');
-      else if (data?.detectedLang === 'en') setContentLang('en');
+      if (isPdf && detected === 'ar') {
+        setExtractStatus(lang === 'ar' ? 'PDF عربي: جاري OCR داخل المتصفح...' : 'Arabic PDF: running OCR in browser...');
+        const ocrText = await ocrPdfInBrowser(file, {
+          onStatus: (s) => setExtractStatus(s),
+          maxPages: 20,
+          langHint: 'ar',
+        });
 
-      // Optional: if user uploads a file, clear previous proposal
+        setRfpText(ocrText);
+        setContentLang('ar');
+      } else {
+        setRfpText(extracted);
+        setContentLang(detected);
+      }
+
       setProposal('');
-      localStorage.removeItem('last_proposal');
-      localStorage.removeItem('last_proposal_lang');
     } catch (e: any) {
       setRfpText(
         lang === 'ar'
-          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file.name}`
-          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file.name}`
+          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file?.name || ''}`
+          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file?.name || ''}`
       );
     } finally {
       setIsExtracting(false);
+      setExtractStatus('');
     }
   }
 
@@ -136,8 +251,8 @@ export default function GetStartedClient() {
     const next: ChatMsg[] = [...messages, userMsg];
 
     setMessages(next);
-
     setIsChatting(true);
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -146,7 +261,6 @@ export default function GetStartedClient() {
       });
 
       const data = await res.json();
-
       const assistantMsg: ChatMsg = {
         role: 'assistant',
         content: (data.reply ?? '...') as string,
@@ -181,10 +295,6 @@ export default function GetStartedClient() {
       const data = await res.json();
       const md = (data.proposalMarkdown as string) || '';
       setProposal(md);
-
-      // For /print fallback
-      localStorage.setItem('last_proposal', md);
-      localStorage.setItem('last_proposal_lang', contentLang);
     } catch {
       alert(lang === 'ar' ? 'فشل إنشاء العرض.' : 'Failed to generate proposal.');
     } finally {
@@ -213,7 +323,6 @@ export default function GetStartedClient() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch {
-      // Fallback for Arabic or if puppeteer fails
       window.open('/print', '_blank');
     }
   }
@@ -243,7 +352,7 @@ export default function GetStartedClient() {
   }
 
   return (
-    <div>
+    <div className="space-y-8">
       <section className="grid gap-6 md:grid-cols-2">
         <Panel title={t(lang, 'gs_title')}>
           <p className="text-sm text-white/70">{t(lang, 'gs_sub')}</p>
@@ -257,15 +366,14 @@ export default function GetStartedClient() {
               onChange={(e) => onUpload(e.target.files?.[0] ?? null)}
             />
 
-            {isExtracting ? (
-              <div className="text-xs text-white/60">
-                {lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...'}
+            {isExtracting && (
+              <div className="text-xs text-blue-400 animate-pulse">
+                {extractStatus || (lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...')}
               </div>
-            ) : null}
+            )}
 
             <label className="block text-sm font-bold text-white/90">{t(lang, 'rfp_paste')}</label>
 
-            {/* ✅ FIX: Direction + unicode-bidi so Arabic (RTL) displays correctly */}
             <textarea
               value={rfpText}
               onChange={(e) => setRfpText(e.target.value)}
@@ -283,29 +391,18 @@ export default function GetStartedClient() {
               disabled={!canGenerate || isGenerating}
               onClick={() => generate('fresh')}
               className={
-                'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow ' +
-                (canGenerate && !isGenerating
-                  ? 'bg-blue-600/80 hover:bg-blue-600'
-                  : 'cursor-not-allowed bg-white/10')
+                'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow transition-all ' +
+                (canGenerate && !isGenerating ? 'bg-blue-600/80 hover:bg-blue-600' : 'cursor-not-allowed bg-white/10')
               }
             >
               {isGenerating ? (lang === 'ar' ? 'جاري الإنشاء...' : 'Generating...') : t(lang, 'generate_btn')}
             </button>
-
-            {/* Small hint about detected content language */}
-            {rfpText.trim() ? (
-              <div className="text-xs text-white/50">
-                {lang === 'ar'
-                  ? `لغة الملف: ${contentLang === 'ar' ? 'عربي' : 'English'}`
-                  : `Detected content language: ${contentLang.toUpperCase()}`}
-              </div>
-            ) : null}
           </div>
         </Panel>
 
         <Panel title={t(lang, 'chat_title')}>
-          <div className="glass-lite rounded-2xl p-4">
-            <div className="h-64 overflow-auto pr-1">
+          <div className="glass-lite rounded-2xl p-4 flex flex-col h-full min-h-[400px]">
+            <div className="flex-1 overflow-auto pr-1">
               {messages.map((m, idx) => (
                 <div
                   key={idx}
