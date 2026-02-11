@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,16 +19,48 @@ function cleanText(s: string) {
     .trim();
 }
 
+async function ensurePdfPolyfills() {
+  // pdf.js needs DOMMatrix in Node (Vercel serverless)
+  if ((globalThis as any).DOMMatrix) return;
+
+  const canvasMod = await import("@napi-rs/canvas");
+
+  // @ts-ignore
+  if (!(globalThis as any).DOMMatrix && (canvasMod as any).DOMMatrix) {
+    // @ts-ignore
+    (globalThis as any).DOMMatrix = (canvasMod as any).DOMMatrix;
+  }
+
+  // (optional but helps if pdf.js asks for them)
+  // @ts-ignore
+  if (!(globalThis as any).ImageData && (canvasMod as any).ImageData) {
+    // @ts-ignore
+    (globalThis as any).ImageData = (canvasMod as any).ImageData;
+  }
+  // @ts-ignore
+  if (!(globalThis as any).Path2D && (canvasMod as any).Path2D) {
+    // @ts-ignore
+    (globalThis as any).Path2D = (canvasMod as any).Path2D;
+  }
+}
+
 async function pdfToText(fileBuffer: Buffer) {
-  // pdf-parse v2/v3 uses PDFParse class (no default export)
-  const parser = new PDFParse({ data: fileBuffer });
+  await ensurePdfPolyfills();
+
+  // ✅ dynamic import AFTER polyfills (so it doesn't crash on import)
+  const mod: any = await import("pdf-parse");
+  const PDFParseCtor = mod.PDFParse ?? mod.default;
+  if (!PDFParseCtor) throw new Error("pdf_parse_export_missing");
+
+  const parser = new PDFParseCtor({ data: fileBuffer });
 
   try {
     const result = await parser.getText();
     return cleanText(result?.text || "");
   } finally {
-    // important to free resources
-    await parser.destroy();
+    if (typeof parser.destroy === "function") {
+      await parser.destroy();
+    }
   }
 }
 
