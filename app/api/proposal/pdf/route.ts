@@ -3,8 +3,10 @@ import { PdfSchema } from "@/lib/validators";
 import { marked } from "marked";
 import fs from "fs";
 import path from "path";
+
 import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium";
+import type { Browser } from "puppeteer-core";
+import chromium from "@sparticuz/chromium-min";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,34 +71,37 @@ function toHtml(lang: "en" | "ar", md: string) {
 }
 
 export async function POST(req: Request) {
-  let browser: any = null;
+  let browser: Browser | null = null;
 
   try {
-    const body = await req.json();
-    const parsed = PdfSchema.parse(body);
-
+    const parsed = PdfSchema.parse(await req.json());
     const html = toHtml(parsed.lang, parsed.proposalMarkdown);
 
-    const executablePath = await chromium.executablePath();
+    const packUrl = process.env.CHROMIUM_PACK_URL;
+    if (!packUrl) throw new Error("CHROMIUM_PACK_URL_missing");
+
+    const executablePath = await chromium.executablePath(packUrl);
 
     browser = await puppeteer.launch({
-      args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox"],
-      executablePath: executablePath || undefined,
+      args: chromium.args,
+      executablePath,
       headless: true,
     });
 
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
 
-    const pdf = await page.pdf({
+    const pdfUint8 = await page.pdf({
       format: "A4",
       printBackground: true,
       margin: { top: "14mm", bottom: "14mm", left: "12mm", right: "12mm" },
     });
 
-    const buf = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
+    await page.close();
+    await browser.close();
+    browser = null;
 
-    return new NextResponse(buf, {
+    return new NextResponse(Buffer.from(pdfUint8), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="proposal-${parsed.lang}.pdf"`,
@@ -104,11 +109,15 @@ export async function POST(req: Request) {
       },
     });
   } catch (e: any) {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {}
+    }
     console.error("/api/proposal/pdf error:", e);
-    return NextResponse.json({ error: e?.message || "pdf_failed" }, { status: 500 });
-  } finally {
-    try {
-      await browser?.close();
-    } catch {}
+    return NextResponse.json(
+      { error: e?.message || "pdf_failed" },
+      { status: 500 }
+    );
   }
 }
