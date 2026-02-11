@@ -24,7 +24,6 @@ async function pdfToText(fileBuffer: Buffer) {
   // ✅ require داخل الفنكشن (حتى ما ينفذ وقت build/collect page data)
   const require = createRequire(import.meta.url);
   const pdfParse: any = require("pdf-parse/lib/pdf-parse.js"); // مهم
-
   const result = await pdfParse(fileBuffer);
   return cleanText(result?.text || "");
 }
@@ -36,6 +35,19 @@ async function docxToText(fileBuffer: Buffer) {
 
 export async function POST(req: Request) {
   try {
+    // ✅ Guard: req.formData() على Vercel يرمي خطأ إذا content-type مش form
+    const ct = req.headers.get("content-type") || "";
+    if (!ct.includes("multipart/form-data") && !ct.includes("application/x-www-form-urlencoded")) {
+      return NextResponse.json(
+        {
+          error: "invalid_content_type",
+          contentType: ct,
+          expected: "multipart/form-data",
+        },
+        { status: 415 }
+      );
+    }
+
     const form = await req.formData();
     const file = form.get("file") as File | null;
 
@@ -66,8 +78,7 @@ export async function POST(req: Request) {
     // DOCX
     if (
       name.endsWith(".docx") ||
-      type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
       const text = await docxToText(bytes);
       return NextResponse.json({
