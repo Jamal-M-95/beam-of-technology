@@ -59,103 +59,131 @@ function cleanText(s: string) {
     .trim();
 }
 
-// OCR PDF in-browser (client-side) using PDF.js + Tesseract.js (v5 API)
-async function ocrPdfInBrowser(
-  file: File,
-  opts: {
-    onStatus?: (s: string) => void;
-    maxPages?: number;
-    langHint?: Lang;
-  } = {}
-) {
-  const { onStatus, maxPages = 20, langHint = 'ar' } = opts;
+// اكتشاف سريع للنص العربي “المكسّر” (حروف متباعدة ومسافات بين كل حرف)
+function looksBrokenArabic(text: string) {
+  if (!isMostlyArabic(text)) return false;
 
-  onStatus?.('Loading PDF engine...');
+  // مثال: ا ل م و ر د  => نمط حرف-مسافة-حرف-مسافة-حرف...
+  const brokenSeq = /[\u0600-\u06FF]\s+[\u0600-\u06FF]\s+[\u0600-\u06FF]/.test(text);
 
-  const pdfjs: any =
-    (await import('pdfjs-dist/legacy/build/pdf.mjs').catch(() =>
-      import('pdfjs-dist/build/pdf.mjs')
-    )) as any;
+  // كثرة المسافات داخل الكلمات أحياناً تكون دليل
+  const lotsOfSingleCharTokens = (text.match(/(?:\s|^)[\u0600-\u06FF](?=\s)/g) || []).length;
+  const arabicChars = (text.match(/[\u0600-\u06FF]/g) || []).length;
+  const ratio = arabicChars ? lotsOfSingleCharTokens / arabicChars : 0;
 
-  const workerSrc = new URL(
-    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
-    import.meta.url
-  ).toString();
+  return brokenSeq || ratio > 0.18;
+}
 
-  try {
-    pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
-  } catch {
-    // ignore
-  }
+async function ocrPdfInBrowser(params: {
+  file: File;
+  ocrLang: Lang;
+  onStatus?: (msg: string) => void;
+  maxPages?: number;
+}) {
+  const { file, ocrLang, onStatus, maxPages = 12 } = params;
+
+  onStatus?.(ocrLang === 'ar' ? 'تحميل PDF...' : 'Loading PDF...');
+
+  // pdfjs (dynamic import) — مهم لتجنب مشاكل build
+  // @ts-ignore
+  const pdfjsLib: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // @ts-ignore
+  const workerSrcMod: any = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+
+  // ربط Worker بشكل صحيح على Next/Vercel
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrcMod?.default || workerSrcMod;
 
   const data = new Uint8Array(await file.arrayBuffer());
-  const loadingTask = pdfjs.getDocument({ data });
+  const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
-  const total = Math.min(pdf.numPages || 1, maxPages);
 
-  onStatus?.('Loading OCR engine...');
+  // tesseract.js (dynamic import)
+  const tess: any = await import('tesseract.js');
+  const createWorker = tess?.createWorker ?? tess?.default?.createWorker;
 
-  const { createWorker } = await import('tesseract.js');
-  const ocrLang = langHint === 'ar' ? 'ara+eng' : 'eng+ara';
+  if (!createWorker) throw new Error('tesseract_createWorker_missing');
 
-  /**
-   * Tesseract.js v5 API:
-   * 1. Languages are passed as the first argument.
-   * 2. The worker index is the second.
-   * 3. The options object (with logger) is the third.
-   */
-  const worker = await createWorker(ocrLang, 1, {
-    logger: (m: any) => {
-      if (m?.status === 'recognizing text' && typeof m?.progress === 'number') {
-        onStatus?.(`OCR… ${Math.round(m.progress * 100)}%`);
+  const langCode = ocrLang === 'ar' ? 'ara' : 'eng';
+
+  let worker: any = null;
+
+  const logger = (m: any) => {
+    if (!m) return;
+    // m.status: "recognizing text" .. m.progress: 0..1
+    if (m.status && typeof m.progress === 'number') {
+      const pct = Math.round(m.progress * 100);
+      onStatus?.(`${m.status} (${pct}%)`);
+    }
+  };
+
+  // createWorker signatures تختلف بين الإصدارات — نخليها robust
+  try {
+    worker = await createWorker([langCode], 1, { logger });
+  } catch {
+    try {
+      worker = await createWorker(langCode, 1, { logger });
+    } catch {
+      try {
+        worker = await createWorker([langCode]);
+      } catch {
+        worker = await createWorker(langCode);
       }
-    },
-  });
+    }
+  }
+
+  // بعض الإصدارات تحتاج reinitialize بدل initialize/loadLanguage
+  try {
+    if (worker.loadLanguage) await worker.loadLanguage(langCode);
+  } catch {}
+  try {
+    if (worker.initialize) await worker.initialize(langCode);
+    else if (worker.reinitialize) await worker.reinitialize(langCode);
+  } catch {}
 
   try {
-    // Note: load(), loadLanguage(), and initialize() are handled automatically in v5
-    await worker.setParameters({
-      preserve_interword_spaces: '1',
-    });
-
-    let out = '';
-
-    for (let i = 1; i <= total; i++) {
-      onStatus?.(`OCR page ${i}/${total}...`);
-
-      const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 2 });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
-
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) throw new Error('canvas_context_failed');
-
-      await page.render({ canvasContext: ctx, viewport }).promise;
-
-      const dataUrl = canvas.toDataURL('image/png');
-      const result = await worker.recognize(dataUrl);
-      const text = result?.data?.text || '';
-
-      out += `\n\n${text}`;
-
-      try {
-        page.cleanup?.();
-      } catch {}
+    if (worker.setParameters) {
+      // تساعد في المسافات
+      await worker.setParameters({ preserve_interword_spaces: '1' });
     }
+  } catch {}
 
-    return cleanText(out);
-  } finally {
-    try {
-      await worker.terminate();
-    } catch {}
+  let out = '';
+  const pages = Math.min(pdf.numPages || 1, maxPages);
+
+  for (let i = 1; i <= pages; i++) {
+    onStatus?.(ocrLang === 'ar' ? `OCR صفحة ${i}/${pages}...` : `OCR page ${i}/${pages}...`);
+
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 2 }); // جودة أعلى
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+
+    if (!ctx) throw new Error('canvas_context_missing');
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const res = await worker.recognize(canvas);
+    const text = res?.data?.text ?? res?.text ?? '';
+
+    out += '\n' + text + '\n';
   }
+
+  try {
+    if (worker.terminate) await worker.terminate();
+  } catch {}
+
+  return cleanText(out);
 }
 
 export default function GetStartedClient() {
   const { lang } = useLang();
+
   const [contentLang, setContentLang] = useState<Lang>(lang);
+
   const [rfpText, setRfpText] = useState('');
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -171,11 +199,13 @@ export default function GetStartedClient() {
 
   useEffect(() => {
     if (!rfpText.trim()) setContentLang(lang);
-  }, [lang, rfpText]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
 
   useEffect(() => {
     setMessages((prev) => {
       const rest = prev.filter((_, i) => i !== 0);
+
       const welcome: ChatMsg = {
         role: 'assistant',
         content:
@@ -183,6 +213,7 @@ export default function GetStartedClient() {
             ? 'مرحبًا! ارفع ملف الـRFP أو الصق النص، ثم اسألني أي شيء قبل إنشاء العرض الفني.'
             : 'Hi! Upload the RFP or paste its text, then ask me anything before generating your proposal.',
       };
+
       return [welcome, ...rest];
     });
   }, [lang]);
@@ -197,44 +228,70 @@ export default function GetStartedClient() {
     if (!file) return;
 
     setIsExtracting(true);
-    setExtractStatus(lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...');
-
+    setExtractStatus(lang === 'ar' ? 'بدء استخراج النص...' : 'Starting extraction...');
     try {
       const name = (file.name || '').toLowerCase();
       const type = (file.type || '').toLowerCase();
       const isPdf = name.endsWith('.pdf') || type === 'application/pdf';
 
+      // 1) جرّب الاستخراج العادي (سريع للإنجليزي + بعض PDFs)
       const fd = new FormData();
       fd.append('file', file);
 
-      const res = await fetch('/api/rfp/extract', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'extract_failed');
+      let extracted = '';
+      let detected: Lang = 'en';
 
-      const extracted = (data.text || '') as string;
-      const detected = (data?.detectedLang as Lang | undefined) || (isMostlyArabic(extracted) ? 'ar' : 'en');
+      try {
+        const res = await fetch('/api/rfp/extract', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (res.ok) {
+          extracted = (data.text || '') as string;
+          detected = (data?.detectedLang === 'ar' ? 'ar' : 'en') as Lang;
+        } else {
+          throw new Error(data?.error || 'extract_failed');
+        }
+      } catch {
+        extracted = '';
+      }
 
-      if (isPdf && detected === 'ar') {
-        setExtractStatus(lang === 'ar' ? 'PDF عربي: جاري OCR داخل المتصفح...' : 'Arabic PDF: running OCR in browser...');
-        const ocrText = await ocrPdfInBrowser(file, {
+      // 2) إذا PDF + عربي + النص مكسّر => OCR في المتصفح
+      if (isPdf && detected === 'ar' && extracted && looksBrokenArabic(extracted)) {
+        setExtractStatus(lang === 'ar' ? 'النص العربي من PDF مكسّر… تشغيل OCR داخل المتصفح' : 'Arabic PDF text looks broken… running browser OCR');
+        const ocrText = await ocrPdfInBrowser({
+          file,
+          ocrLang: 'ar',
+          maxPages: 12,
           onStatus: (s) => setExtractStatus(s),
-          maxPages: 20,
-          langHint: 'ar',
         });
 
         setRfpText(ocrText);
         setContentLang('ar');
+      } else if (isPdf && (!extracted || (detected === 'ar' && looksBrokenArabic(extracted)))) {
+        // إذا فشل كلياً أو مكسّر حتى بدون detected واضح
+        setExtractStatus(lang === 'ar' ? 'تشغيل OCR داخل المتصفح...' : 'Running browser OCR...');
+        const ocrText = await ocrPdfInBrowser({
+          file,
+          ocrLang: isMostlyArabic(extracted) ? 'ar' : 'en',
+          maxPages: 12,
+          onStatus: (s) => setExtractStatus(s),
+        });
+
+        setRfpText(ocrText);
+        setContentLang(isMostlyArabic(ocrText) ? 'ar' : 'en');
       } else {
+        // 3) النص طبيعي — اعتمده
         setRfpText(extracted);
         setContentLang(detected);
       }
 
       setProposal('');
+      localStorage.removeItem('last_proposal');
+      localStorage.removeItem('last_proposal_lang');
     } catch (e: any) {
       setRfpText(
         lang === 'ar'
-          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file?.name || ''}`
-          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file?.name || ''}`
+          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file.name}`
+          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file.name}`
       );
     } finally {
       setIsExtracting(false);
@@ -251,8 +308,8 @@ export default function GetStartedClient() {
     const next: ChatMsg[] = [...messages, userMsg];
 
     setMessages(next);
-    setIsChatting(true);
 
+    setIsChatting(true);
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -261,6 +318,7 @@ export default function GetStartedClient() {
       });
 
       const data = await res.json();
+
       const assistantMsg: ChatMsg = {
         role: 'assistant',
         content: (data.reply ?? '...') as string,
@@ -295,6 +353,9 @@ export default function GetStartedClient() {
       const data = await res.json();
       const md = (data.proposalMarkdown as string) || '';
       setProposal(md);
+
+      localStorage.setItem('last_proposal', md);
+      localStorage.setItem('last_proposal_lang', contentLang);
     } catch {
       alert(lang === 'ar' ? 'فشل إنشاء العرض.' : 'Failed to generate proposal.');
     } finally {
@@ -352,7 +413,7 @@ export default function GetStartedClient() {
   }
 
   return (
-    <div className="space-y-8">
+    <div>
       <section className="grid gap-6 md:grid-cols-2">
         <Panel title={t(lang, 'gs_title')}>
           <p className="text-sm text-white/70">{t(lang, 'gs_sub')}</p>
@@ -366,11 +427,11 @@ export default function GetStartedClient() {
               onChange={(e) => onUpload(e.target.files?.[0] ?? null)}
             />
 
-            {isExtracting && (
-              <div className="text-xs text-blue-400 animate-pulse">
+            {isExtracting ? (
+              <div className="text-xs text-white/60">
                 {extractStatus || (lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...')}
               </div>
-            )}
+            ) : null}
 
             <label className="block text-sm font-bold text-white/90">{t(lang, 'rfp_paste')}</label>
 
@@ -391,18 +452,28 @@ export default function GetStartedClient() {
               disabled={!canGenerate || isGenerating}
               onClick={() => generate('fresh')}
               className={
-                'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow transition-all ' +
-                (canGenerate && !isGenerating ? 'bg-blue-600/80 hover:bg-blue-600' : 'cursor-not-allowed bg-white/10')
+                'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow ' +
+                (canGenerate && !isGenerating
+                  ? 'bg-blue-600/80 hover:bg-blue-600'
+                  : 'cursor-not-allowed bg-white/10')
               }
             >
               {isGenerating ? (lang === 'ar' ? 'جاري الإنشاء...' : 'Generating...') : t(lang, 'generate_btn')}
             </button>
+
+            {rfpText.trim() ? (
+              <div className="text-xs text-white/50">
+                {lang === 'ar'
+                  ? `لغة الملف: ${contentLang === 'ar' ? 'عربي' : 'English'}`
+                  : `Detected content language: ${contentLang.toUpperCase()}`}
+              </div>
+            ) : null}
           </div>
         </Panel>
 
         <Panel title={t(lang, 'chat_title')}>
-          <div className="glass-lite rounded-2xl p-4 flex flex-col h-full min-h-[400px]">
-            <div className="flex-1 overflow-auto pr-1">
+          <div className="glass-lite rounded-2xl p-4">
+            <div className="h-64 overflow-auto pr-1">
               {messages.map((m, idx) => (
                 <div
                   key={idx}
