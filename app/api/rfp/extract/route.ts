@@ -15,17 +15,57 @@ function isMostlyArabic(s: string) {
 function cleanText(s: string) {
   return s
     .replace(/\u0000/g, "")
+    .replace(/\u00A0/g, " ") // NBSP -> normal space
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// ✅ هل النص طالع "حروف عربي مفصولة"؟
+function looksLikeSpacedArabic(s: string) {
+  const letters = (s.match(/[\u0600-\u06FF]/g) || []).length;
+  const pairs = (s.match(/[\u0600-\u06FF] [\u0600-\u06FF]/g) || []).length;
+  return letters > 80 && pairs / letters > 0.15;
+}
+
+// ✅ يلغي المسافة الواحدة بين الحروف العربية، ويحافظ على مسافات الكلمات (2+)
+function fixSpacedArabicFromPdf(s: string) {
+  const PLACEHOLDER = "\uE000"; // placeholder مؤقت
+  let t = s.replace(/ {2,}/g, PLACEHOLDER); // احفظ مسافات الكلمات
+
+  // Arabic ranges + presentation forms
+  const AR =
+    "\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF";
+
+  const re = new RegExp(`([${AR}]) ([${AR}])`, "g");
+
+  // كرر لحد ما تخلص جميع الحالات
+  while (re.test(t)) {
+    t = t.replace(re, "$1$2");
+  }
+
+  // رجّع مسافات الكلمات
+  t = t.replace(new RegExp(PLACEHOLDER, "g"), " ");
+
+  // تنظيف بسيط
+  t = t.replace(/ *\n */g, "\n");
+  return t;
 }
 
 async function pdfToText(fileBuffer: Buffer) {
   // ✅ require داخل الفنكشن (حتى ما ينفذ وقت build/collect page data)
   const require = createRequire(import.meta.url);
   const pdfParse: any = require("pdf-parse/lib/pdf-parse.js"); // مهم
+
   const result = await pdfParse(fileBuffer);
-  return cleanText(result?.text || "");
+  let text = result?.text || "";
+
+  // ✅ طبق إصلاح العربي فقط عند الحاجة
+  if (looksLikeSpacedArabic(text)) {
+    text = fixSpacedArabicFromPdf(text);
+  }
+
+  return cleanText(text);
 }
 
 async function docxToText(fileBuffer: Buffer) {
@@ -37,7 +77,10 @@ export async function POST(req: Request) {
   try {
     // ✅ Guard: req.formData() على Vercel يرمي خطأ إذا content-type مش form
     const ct = req.headers.get("content-type") || "";
-    if (!ct.includes("multipart/form-data") && !ct.includes("application/x-www-form-urlencoded")) {
+    if (
+      !ct.includes("multipart/form-data") &&
+      !ct.includes("application/x-www-form-urlencoded")
+    ) {
       return NextResponse.json(
         {
           error: "invalid_content_type",
@@ -78,7 +121,8 @@ export async function POST(req: Request) {
     // DOCX
     if (
       name.endsWith(".docx") ||
-      type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      type ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
       const text = await docxToText(bytes);
       return NextResponse.json({
