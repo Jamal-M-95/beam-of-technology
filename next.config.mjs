@@ -1,8 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
-    unoptimized: true
-  }
+    unoptimized: true,
+  },
+  serverExternalPackages: ["pdf-parse"],
 };
 
 export default nextConfig;

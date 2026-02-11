@@ -1,116 +1,91 @@
 import { NextResponse } from "next/server";
-import { PdfSchema } from "@/lib/validators";
-import { marked } from "marked";
-import fs from "fs";
-import path from "path";
-
-import puppeteer, { type Browser } from "puppeteer-core";
-
-import chromium from "@sparticuz/chromium";
+import mammoth from "mammoth";
+import { createRequire } from "module";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-function logoDataUri() {
-  try {
-    const p = path.join(process.cwd(), "public", "logo.jpeg");
-    const b = fs.readFileSync(p);
-    const base64 = b.toString("base64");
-    return `data:image/jpeg;base64,${base64}`;
-  } catch {
-    return "";
-  }
+const require = createRequire(import.meta.url);
+
+// ✅ لا تستورد "pdf-parse" مباشرة (entry) لتجنب debug mode
+const pdfParse: any = require("pdf-parse/lib/pdf-parse.js");
+
+function isMostlyArabic(s: string) {
+  const ar = (s.match(/[\u0600-\u06FF]/g) || []).length;
+  const total = (s.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
+  return total > 0 && ar / total > 0.25;
 }
 
-function toHtml(lang: "en" | "ar", md: string) {
-  const content = marked.parse(md);
-  const dir = lang === "ar" ? "rtl" : "ltr";
-  const align = lang === "ar" ? "right" : "left";
-  const logo = logoDataUri();
+function cleanText(s: string) {
+  return s
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
-  return `<!doctype html>
-<html lang="${lang}" dir="${dir}">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Proposal</title>
-<style>
-  body{ font-family: Arial, "Noto Naskh Arabic", "Noto Sans Arabic", Tahoma, sans-serif; margin: 32px; color:#0b1220; line-height:1.45; }
-  .header{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px; }
-  .brand{ display:flex; align-items:center; gap:12px; }
-  .brand img{ width:52px; height:52px; border-radius:10px; object-fit:cover; }
-  .brand .t1{ font-weight:800; font-size:14px; }
-  .brand .t2{ font-weight:900; font-size:18px; color:#0b5bd3; }
-  .doc{ direction:${dir}; text-align:${align}; unicode-bidi: plaintext; }
-  h1,h2,h3{ margin: 18px 0 8px; }
-  table{ width:100%; border-collapse:collapse; margin: 12px 0; }
-  th,td{ border:1px solid #ddd; padding:8px; font-size:12px; vertical-align:top; }
-  th{ background:#f5f7fb; font-weight:800; }
-  code{ background:#f5f7fb; padding:2px 4px; border-radius:6px; }
-  blockquote{ border-${align === "right" ? "right" : "left"}:4px solid #0b5bd3; margin:12px 0; padding:8px 12px; background:#f5f7fb; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <div class="brand">
-      ${logo ? `<img src="${logo}" alt="Logo" />` : ""}
-      <div>
-        <div class="t1">Beam Of</div>
-        <div class="t2">Technology</div>
-      </div>
-    </div>
-    <div style="font-size:12px;color:#4b5563">${lang === "ar" ? "عرض فني" : "Technical Proposal"}</div>
-  </div>
+async function pdfToText(fileBuffer: Buffer) {
+  const result = await pdfParse(fileBuffer);
+  return cleanText(result?.text || "");
+}
 
-  <div class="doc">
-    ${content}
-  </div>
-</body>
-</html>`;
+async function docxToText(fileBuffer: Buffer) {
+  const result = await mammoth.extractRawText({ buffer: fileBuffer });
+  return cleanText(result?.value || "");
 }
 
 export async function POST(req: Request) {
-  let browser: Browser | null = null;
-
   try {
-    const body = await req.json();
-    const parsed = PdfSchema.parse(body);
+    const form = await req.formData();
+    const file = form.get("file") as File | null;
 
-    const html = toHtml(parsed.lang, parsed.proposalMarkdown);
+    if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
 
-    browser = await puppeteer.launch({
-  args: chromium.args,
-  executablePath: await chromium.executablePath(),
-  headless: true,
-});
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const name = (file.name || "").toLowerCase();
+    const type = (file.type || "").toLowerCase();
 
+    // TXT
+    if (name.endsWith(".txt") || type === "text/plain") {
+      const text = cleanText(bytes.toString("utf8"));
+      return NextResponse.json({
+        text,
+        detectedLang: isMostlyArabic(text) ? "ar" : "en",
+      });
+    }
 
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    // PDF
+    if (name.endsWith(".pdf") || type === "application/pdf") {
+      const text = await pdfToText(bytes);
+      return NextResponse.json({
+        text,
+        detectedLang: isMostlyArabic(text) ? "ar" : "en",
+      });
+    }
 
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      printBackground: true,
-      margin: { top: "14mm", bottom: "14mm", left: "12mm", right: "12mm" },
-    });
+    // DOCX
+    if (
+      name.endsWith(".docx") ||
+      type ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
+      const text = await docxToText(bytes);
+      return NextResponse.json({
+        text,
+        detectedLang: isMostlyArabic(text) ? "ar" : "en",
+      });
+    }
 
-    await page.close();
-    await browser.close();
-
-    // pdfBuffer is Uint8Array in some versions — ensure BodyInit
-    const bodyBuffer = Buffer.from(pdfBuffer);
-
-    return new NextResponse(bodyBuffer, {
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="proposal-${parsed.lang}.pdf"`,
-      },
-    });
+    return NextResponse.json(
+      { error: "Unsupported file type. Use PDF / DOCX / TXT." },
+      { status: 400 }
+    );
   } catch (e: any) {
-    try {
-      await browser?.close();
-    } catch {}
-    return NextResponse.json({ error: e?.message || "pdf_failed" }, { status: 400 });
+    console.error("/api/rfp/extract error:", e);
+    return NextResponse.json(
+      { error: String(e?.message || e) },
+      { status: 500 }
+    );
   }
 }
