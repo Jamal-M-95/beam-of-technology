@@ -45,6 +45,8 @@ function ProposalPreview({
   );
 }
 
+/** ---------- Helpers ---------- */
+
 function isMostlyArabic(s: string) {
   const ar = (s.match(/[\u0600-\u06FF]/g) || []).length;
   const total = (s.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
@@ -56,128 +58,168 @@ function cleanText(s: string) {
     .replace(/\u0000/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
 
-// اكتشاف سريع للنص العربي “المكسّر” (حروف متباعدة ومسافات بين كل حرف)
-function looksBrokenArabic(text: string) {
-  if (!isMostlyArabic(text)) return false;
+/**
+ * Heuristic: Arabic PDF extraction sometimes comes out with almost no spaces
+ * and long continuous Arabic runs (visual order / broken spacing).
+ */
+function looksBrokenArabicPdf(text: string) {
+  const t = text || '';
+  if (t.length < 80) return true;
+  if (!isMostlyArabic(t)) return false;
 
-  // مثال: ا ل م و ر د  => نمط حرف-مسافة-حرف-مسافة-حرف...
-  const brokenSeq = /[\u0600-\u06FF]\s+[\u0600-\u06FF]\s+[\u0600-\u06FF]/.test(text);
+  const spaces = (t.match(/[ \t]/g) || []).length;
+  const ratio = spaces / Math.max(1, t.length);
 
-  // كثرة المسافات داخل الكلمات أحياناً تكون دليل
-  const lotsOfSingleCharTokens = (text.match(/(?:\s|^)[\u0600-\u06FF](?=\s)/g) || []).length;
-  const arabicChars = (text.match(/[\u0600-\u06FF]/g) || []).length;
-  const ratio = arabicChars ? lotsOfSingleCharTokens / arabicChars : 0;
+  // too few spaces for long Arabic content → usually broken
+  if (ratio < 0.01) return true;
 
-  return brokenSeq || ratio > 0.18;
+  // very long continuous Arabic sequences
+  const longRun = /[\u0600-\u06FF]{25,}/.test(t);
+  return longRun;
 }
 
-async function ocrPdfInBrowser(params: {
-  file: File;
-  ocrLang: Lang;
-  onStatus?: (msg: string) => void;
-  maxPages?: number;
-}) {
-  const { file, ocrLang, onStatus, maxPages = 12 } = params;
+type PdfItem = { str: string; x: number; y: number; w: number };
 
-  onStatus?.(ocrLang === 'ar' ? 'تحميل PDF...' : 'Loading PDF...');
+/**
+ * PDF text extraction in the browser using pdfjs-dist (better RTL than server pdf-parse).
+ */
+async function extractPdfTextClient(file: File, onStatus?: (s: string) => void) {
+  onStatus?.('Loading PDF engine...');
 
-  // pdfjs (dynamic import) — مهم لتجنب مشاكل build
-  // @ts-ignore
-  const pdfjsLib: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  // @ts-ignore
-  const workerSrcMod: any = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+  // pdfjs-dist@4.x (ESM)
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
 
-  // ربط Worker بشكل صحيح على Next/Vercel
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrcMod?.default || workerSrcMod;
+  // Set worker (works with Next bundling)
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+    import.meta.url
+  ).toString();
 
   const data = new Uint8Array(await file.arrayBuffer());
-  const loadingTask = pdfjsLib.getDocument({ data });
+
+  onStatus?.('Reading PDF pages...');
+  const loadingTask = pdfjs.getDocument({ data });
   const pdf = await loadingTask.promise;
 
-  // tesseract.js (dynamic import)
-  const tess: any = await import('tesseract.js');
-  const createWorker = tess?.createWorker ?? tess?.default?.createWorker;
+  const numPages: number = pdf.numPages;
+  let full = '';
 
-  if (!createWorker) throw new Error('tesseract_createWorker_missing');
+  for (let p = 1; p <= numPages; p++) {
+    onStatus?.(`Extracting text… page ${p}/${numPages}`);
 
-  const langCode = ocrLang === 'ar' ? 'ara' : 'eng';
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
 
-  let worker: any = null;
+    const items: PdfItem[] = (tc.items || [])
+      .filter((it: any) => typeof it?.str === 'string' && String(it.str).trim() !== '')
+      .map((it: any) => ({
+        str: String(it.str),
+        x: Number(it.transform?.[4] ?? 0),
+        y: Number(it.transform?.[5] ?? 0),
+        w: Number(it.width ?? 0),
+      }));
 
-  const logger = (m: any) => {
-    if (!m) return;
-    // m.status: "recognizing text" .. m.progress: 0..1
-    if (m.status && typeof m.progress === 'number') {
-      const pct = Math.round(m.progress * 100);
-      onStatus?.(`${m.status} (${pct}%)`);
+    const rtlLine = items.length ? isMostlyArabic(items.map((i: PdfItem) => i.str).join(' ')) : false;
+
+    const bucketY = (y: number) => Math.round(y * 2) / 2; // 0.5 buckets
+    const lines = new Map<number, PdfItem[]>();
+
+    for (const it of items) {
+      const y = bucketY(it.y);
+      const arr = lines.get(y) || [];
+      arr.push(it);
+      lines.set(y, arr);
     }
-  };
 
-  // createWorker signatures تختلف بين الإصدارات — نخليها robust
-  try {
-    worker = await createWorker([langCode], 1, { logger });
-  } catch {
-    try {
-      worker = await createWorker(langCode, 1, { logger });
-    } catch {
-      try {
-        worker = await createWorker([langCode]);
-      } catch {
-        worker = await createWorker(langCode);
+    const ys = Array.from(lines.keys()).sort((a: number, b: number) => b - a); // top -> bottom
+    const pageLines: string[] = [];
+
+    for (const y of ys) {
+      const lineItems = lines.get(y)!;
+
+      lineItems.sort((a: PdfItem, b: PdfItem) => (rtlLine ? b.x - a.x : a.x - b.x));
+
+      let line = '';
+      let prev: { x: number; w: number } | null = null;
+
+      for (const it of lineItems) {
+        if (prev) {
+          const gap = rtlLine ? prev.x - (it.x + it.w) : it.x - (prev.x + prev.w);
+          if (gap > 2) line += ' ';
+        }
+        line += it.str;
+        prev = { x: it.x, w: it.w };
       }
+
+      pageLines.push(line);
     }
+
+    full += pageLines.join('\n') + '\n\n';
   }
 
-  // بعض الإصدارات تحتاج reinitialize بدل initialize/loadLanguage
-  try {
-    if (worker.loadLanguage) await worker.loadLanguage(langCode);
-  } catch {}
-  try {
-    if (worker.initialize) await worker.initialize(langCode);
-    else if (worker.reinitialize) await worker.reinitialize(langCode);
-  } catch {}
+  return cleanText(full);
+}
 
-  try {
-    if (worker.setParameters) {
-      // تساعد في المسافات
-      await worker.setParameters({ preserve_interword_spaces: '1' });
-    }
-  } catch {}
+/**
+ * OCR fallback (client-side) using pdfjs-dist render -> tesseract.js recognize(canvas)
+ * Only used when text extraction is empty/broken.
+ */
+async function ocrPdfClient(file: File, onStatus?: (s: string) => void) {
+  onStatus?.('Preparing OCR...');
 
-  let out = '';
-  const pages = Math.min(pdf.numPages || 1, maxPages);
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+    import.meta.url
+  ).toString();
 
-  for (let i = 1; i <= pages; i++) {
-    onStatus?.(ocrLang === 'ar' ? `OCR صفحة ${i}/${pages}...` : `OCR page ${i}/${pages}...`);
+  // tesseract.js v7: createWorker() then worker.reinitialize('ara')
+  const tesseract: any = await import('tesseract.js');
+  const createWorker: () => Promise<any> = tesseract.createWorker;
 
-    const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 2 }); // جودة أعلى
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjs.getDocument({ data }).promise;
+
+  // OCR is heavy — limit pages to protect UX
+  const MAX_OCR_PAGES = 10;
+  const pages = Math.min(Number(pdf.numPages || 1), MAX_OCR_PAGES);
+
+  onStatus?.('Downloading OCR language data (first time may take a bit)...');
+
+  const worker = await createWorker();
+  await worker.reinitialize('ara');
+
+  let full = '';
+
+  for (let p = 1; p <= pages; p++) {
+    onStatus?.(`OCR… page ${p}/${pages}`);
+
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale: 2.0 });
 
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('canvas_context_failed');
 
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
 
-    if (!ctx) throw new Error('canvas_context_missing');
-
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     const res = await worker.recognize(canvas);
-    const text = res?.data?.text ?? res?.text ?? '';
-
-    out += '\n' + text + '\n';
+    full += String(res?.data?.text || '') + '\n\n';
   }
 
-  try {
-    if (worker.terminate) await worker.terminate();
-  } catch {}
+  await worker.terminate();
 
-  return cleanText(out);
+  return cleanText(full);
 }
+
+/** ---------- Component ---------- */
 
 export default function GetStartedClient() {
   const { lang } = useLang();
@@ -228,61 +270,46 @@ export default function GetStartedClient() {
     if (!file) return;
 
     setIsExtracting(true);
-    setExtractStatus(lang === 'ar' ? 'بدء استخراج النص...' : 'Starting extraction...');
+    setExtractStatus(lang === 'ar' ? 'جاري التحضير...' : 'Preparing...');
     try {
       const name = (file.name || '').toLowerCase();
       const type = (file.type || '').toLowerCase();
-      const isPdf = name.endsWith('.pdf') || type === 'application/pdf';
 
-      // 1) جرّب الاستخراج العادي (سريع للإنجليزي + بعض PDFs)
+      // ✅ PDF: extract in the browser + OCR fallback if broken Arabic
+      if (name.endsWith('.pdf') || type === 'application/pdf') {
+        let text = await extractPdfTextClient(file, setExtractStatus);
+
+        const detected: Lang = isMostlyArabic(text) ? 'ar' : 'en';
+
+        if (detected === 'ar' && looksBrokenArabicPdf(text)) {
+          setExtractStatus(lang === 'ar' ? 'النص العربي ملخبط… جاري OCR' : 'Arabic looks broken… running OCR');
+          text = await ocrPdfClient(file, setExtractStatus);
+        }
+
+        setRfpText(text);
+        setContentLang(isMostlyArabic(text) ? 'ar' : 'en');
+
+        setProposal('');
+        localStorage.removeItem('last_proposal');
+        localStorage.removeItem('last_proposal_lang');
+
+        return;
+      }
+
+      // ✅ Non-PDF: use server extractor
+      setExtractStatus(lang === 'ar' ? 'جاري الرفع...' : 'Uploading...');
       const fd = new FormData();
       fd.append('file', file);
 
-      let extracted = '';
-      let detected: Lang = 'en';
+      const res = await fetch('/api/rfp/extract', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'extract_failed');
 
-      try {
-        const res = await fetch('/api/rfp/extract', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (res.ok) {
-          extracted = (data.text || '') as string;
-          detected = (data?.detectedLang === 'ar' ? 'ar' : 'en') as Lang;
-        } else {
-          throw new Error(data?.error || 'extract_failed');
-        }
-      } catch {
-        extracted = '';
-      }
+      const extracted = String(data.text || '');
+      setRfpText(extracted);
 
-      // 2) إذا PDF + عربي + النص مكسّر => OCR في المتصفح
-      if (isPdf && detected === 'ar' && extracted && looksBrokenArabic(extracted)) {
-        setExtractStatus(lang === 'ar' ? 'النص العربي من PDF مكسّر… تشغيل OCR داخل المتصفح' : 'Arabic PDF text looks broken… running browser OCR');
-        const ocrText = await ocrPdfInBrowser({
-          file,
-          ocrLang: 'ar',
-          maxPages: 12,
-          onStatus: (s) => setExtractStatus(s),
-        });
-
-        setRfpText(ocrText);
-        setContentLang('ar');
-      } else if (isPdf && (!extracted || (detected === 'ar' && looksBrokenArabic(extracted)))) {
-        // إذا فشل كلياً أو مكسّر حتى بدون detected واضح
-        setExtractStatus(lang === 'ar' ? 'تشغيل OCR داخل المتصفح...' : 'Running browser OCR...');
-        const ocrText = await ocrPdfInBrowser({
-          file,
-          ocrLang: isMostlyArabic(extracted) ? 'ar' : 'en',
-          maxPages: 12,
-          onStatus: (s) => setExtractStatus(s),
-        });
-
-        setRfpText(ocrText);
-        setContentLang(isMostlyArabic(ocrText) ? 'ar' : 'en');
-      } else {
-        // 3) النص طبيعي — اعتمده
-        setRfpText(extracted);
-        setContentLang(detected);
-      }
+      if (data?.detectedLang === 'ar') setContentLang('ar');
+      else if (data?.detectedLang === 'en') setContentLang('en');
 
       setProposal('');
       localStorage.removeItem('last_proposal');
@@ -290,8 +317,8 @@ export default function GetStartedClient() {
     } catch (e: any) {
       setRfpText(
         lang === 'ar'
-          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file.name}`
-          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file.name}`
+          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file?.name || ''}`
+          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file?.name || ''}`
       );
     } finally {
       setIsExtracting(false);
@@ -321,7 +348,7 @@ export default function GetStartedClient() {
 
       const assistantMsg: ChatMsg = {
         role: 'assistant',
-        content: (data.reply ?? '...') as string,
+        content: String(data.reply ?? '...'),
       };
 
       setMessages((p) => [...p, assistantMsg]);
@@ -351,7 +378,7 @@ export default function GetStartedClient() {
         }),
       });
       const data = await res.json();
-      const md = (data.proposalMarkdown as string) || '';
+      const md = String((data.proposalMarkdown as string) || '');
       setProposal(md);
 
       localStorage.setItem('last_proposal', md);
@@ -453,9 +480,7 @@ export default function GetStartedClient() {
               onClick={() => generate('fresh')}
               className={
                 'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow ' +
-                (canGenerate && !isGenerating
-                  ? 'bg-blue-600/80 hover:bg-blue-600'
-                  : 'cursor-not-allowed bg-white/10')
+                (canGenerate && !isGenerating ? 'bg-blue-600/80 hover:bg-blue-600' : 'cursor-not-allowed bg-white/10')
               }
             >
               {isGenerating ? (lang === 'ar' ? 'جاري الإنشاء...' : 'Generating...') : t(lang, 'generate_btn')}
@@ -475,10 +500,7 @@ export default function GetStartedClient() {
           <div className="glass-lite rounded-2xl p-4">
             <div className="h-64 overflow-auto pr-1">
               {messages.map((m, idx) => (
-                <div
-                  key={idx}
-                  className={'mb-3 flex ' + (m.role === 'user' ? 'justify-end' : 'justify-start')}
-                >
+                <div key={idx} className={'mb-3 flex ' + (m.role === 'user' ? 'justify-end' : 'justify-start')}>
                   <div
                     dir={dir}
                     style={{ unicodeBidi: 'plaintext' }}
@@ -523,18 +545,14 @@ export default function GetStartedClient() {
         <div className="glass rounded-2xl p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="text-lg font-extrabold">
-                {lang === 'ar' ? 'العرض الفني' : 'Technical Proposal'}
-              </div>
+              <div className="text-lg font-extrabold">{lang === 'ar' ? 'العرض الفني' : 'Technical Proposal'}</div>
               <div className="text-sm text-white/70">{t(lang, 'proposal_ready')}</div>
             </div>
 
             <div className="flex flex-wrap gap-2">
               <button
                 disabled={!proposal}
-                onClick={() =>
-                  document.getElementById('proposal_preview')?.scrollIntoView({ behavior: 'smooth' })
-                }
+                onClick={() => document.getElementById('proposal_preview')?.scrollIntoView({ behavior: 'smooth' })}
                 className={
                   'rounded-xl px-4 py-2 text-sm font-bold ' +
                   (proposal ? 'bg-white/10 hover:bg-white/15' : 'cursor-not-allowed bg-white/5 text-white/40')
