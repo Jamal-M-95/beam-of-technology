@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import os from "os";
-import path from "path";
-import fs from "fs/promises";
+import mammoth from "mammoth";
+
+// ✅ pdf-parse has no default export in ESM in some versions → normalize import
+import * as pdfParseModule from "pdf-parse";
+const pdfParse: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
 
 export const runtime = "nodejs";
-
-const execFileAsync = promisify(execFile);
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 function isMostlyArabic(s: string) {
   const ar = (s.match(/[\u0600-\u06FF]/g) || []).length;
@@ -23,65 +23,14 @@ function cleanText(s: string) {
     .trim();
 }
 
-async function ensureBinary(bin: string, hint: string) {
-  try {
-    await execFileAsync("which", [bin]);
-  } catch {
-    throw new Error(`${bin}_missing: ${hint}`);
-  }
+async function pdfToText(fileBuffer: Buffer) {
+  const result = await pdfParse(fileBuffer);
+  return cleanText(result?.text || "");
 }
 
-async function pdfToTextWithPoppler(fileBuffer: Buffer) {
-  // Requires: pdftotext (poppler)
-  await ensureBinary(
-    "pdftotext",
-    "Install Poppler (pdftotext). On macOS: brew install poppler"
-  );
-
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "rfp-"));
-  const inPath = path.join(tmpDir, "rfp.pdf");
-  const outPath = path.join(tmpDir, "rfp.txt");
-
-  try {
-    await fs.writeFile(inPath, fileBuffer);
-
-    // -layout keeps reading order better
-    // -enc UTF-8 forces UTF-8 output
-    await execFileAsync("pdftotext", ["-layout", "-enc", "UTF-8", inPath, outPath]);
-
-    const text = await fs.readFile(outPath, "utf8");
-    return cleanText(text);
-  } finally {
-    try {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    } catch {}
-  }
-}
-
-async function docxToTextWithPandoc(fileBuffer: Buffer) {
-  // Requires: pandoc
-  await ensureBinary(
-    "pandoc",
-    "Install Pandoc. On macOS: brew install pandoc"
-  );
-
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "rfp-"));
-  const inPath = path.join(tmpDir, "rfp.docx");
-  const outPath = path.join(tmpDir, "rfp.txt");
-
-  try {
-    await fs.writeFile(inPath, fileBuffer);
-
-    // DOCX -> plain text (UTF-8). Works well for Arabic/English.
-    await execFileAsync("pandoc", [inPath, "-t", "plain", "-o", outPath]);
-
-    const text = await fs.readFile(outPath, "utf8");
-    return cleanText(text);
-  } finally {
-    try {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    } catch {}
-  }
+async function docxToText(fileBuffer: Buffer) {
+  const result = await mammoth.extractRawText({ buffer: fileBuffer });
+  return cleanText(result.value || "");
 }
 
 export async function POST(req: Request) {
@@ -93,9 +42,10 @@ export async function POST(req: Request) {
 
     const bytes = Buffer.from(await file.arrayBuffer());
     const name = (file.name || "").toLowerCase();
+    const type = (file.type || "").toLowerCase();
 
     // TXT
-    if (name.endsWith(".txt") || file.type === "text/plain") {
+    if (name.endsWith(".txt") || type === "text/plain") {
       const text = cleanText(bytes.toString("utf8"));
       return NextResponse.json({
         text,
@@ -104,8 +54,8 @@ export async function POST(req: Request) {
     }
 
     // PDF
-    if (name.endsWith(".pdf") || file.type === "application/pdf") {
-      const text = await pdfToTextWithPoppler(bytes);
+    if (name.endsWith(".pdf") || type === "application/pdf") {
+      const text = await pdfToText(bytes);
       return NextResponse.json({
         text,
         detectedLang: isMostlyArabic(text) ? "ar" : "en",
@@ -115,10 +65,9 @@ export async function POST(req: Request) {
     // DOCX
     if (
       name.endsWith(".docx") ||
-      file.type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
-      const text = await docxToTextWithPandoc(bytes);
+      const text = await docxToText(bytes);
       return NextResponse.json({
         text,
         detectedLang: isMostlyArabic(text) ? "ar" : "en",
@@ -130,7 +79,6 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   } catch (e: any) {
-    // Helpful server-side logging
     console.error("/api/rfp/extract error:", e);
     return NextResponse.json(
       { error: String(e?.message || e) },
