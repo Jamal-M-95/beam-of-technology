@@ -58,16 +58,16 @@ export default function GetStartedClient() {
     // Welcome message (always first) - depends on UI language
     setMessages((prev) => {
       const rest = prev.filter((_, i) => i !== 0);
-      return [
-        {
-          role: 'assistant',
-          content:
-            lang === 'ar'
-              ? 'مرحبًا! ارفع ملف الـRFP أو الصق النص، ثم اسألني أي شيء قبل إنشاء العرض الفني.'
-              : 'Hi! Upload the RFP or paste its text, then ask me anything before generating your proposal.',
-        },
-        ...rest,
-      ];
+
+      const welcome: ChatMsg = {
+        role: 'assistant',
+        content:
+          lang === 'ar'
+            ? 'مرحبًا! ارفع ملف الـRFP أو الصق النص، ثم اسألني أي شيء قبل إنشاء العرض الفني.'
+            : 'Hi! Upload the RFP or paste its text, then ask me anything before generating your proposal.',
+      };
+
+      return [welcome, ...rest];
     });
   }, [lang]);
 
@@ -116,7 +116,10 @@ export default function GetStartedClient() {
     if (!text) return;
     setChatInput('');
 
-    const next = [...messages, { role: 'user', content: text }];
+    // ✅ Ensure role stays a strict literal type
+    const userMsg: ChatMsg = { role: 'user', content: text };
+    const next: ChatMsg[] = [...messages, userMsg];
+
     setMessages(next);
 
     setIsChatting(true);
@@ -126,16 +129,21 @@ export default function GetStartedClient() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lang: contentLang, rfpText, messages: next }),
       });
+
       const data = await res.json();
-      setMessages((p) => [...p, { role: 'assistant', content: data.reply ?? '...' }]);
+
+      const assistantMsg: ChatMsg = {
+        role: 'assistant',
+        content: (data.reply ?? '...') as string,
+      };
+
+      setMessages((p) => [...p, assistantMsg]);
     } catch {
-      setMessages((p) => [
-        ...p,
-        {
-          role: 'assistant',
-          content: lang === 'ar' ? 'حصل خطأ في الدردشة.' : 'Chat error.',
-        },
-      ]);
+      const errMsg: ChatMsg = {
+        role: 'assistant',
+        content: lang === 'ar' ? 'حصل خطأ في الدردشة.' : 'Chat error.',
+      };
+      setMessages((p) => [...p, errMsg]);
     } finally {
       setIsChatting(false);
     }
@@ -234,10 +242,10 @@ export default function GetStartedClient() {
               onChange={(e) => onUpload(e.target.files?.[0] ?? null)}
             />
 
-            
-
             {isExtracting ? (
-              <div className="text-xs text-white/60">{lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...'}</div>
+              <div className="text-xs text-white/60">
+                {lang === 'ar' ? 'جاري استخراج النص...' : 'Extracting text...'}
+              </div>
             ) : null}
 
             <label className="block text-sm font-bold text-white/90">{t(lang, 'rfp_paste')}</label>
@@ -374,7 +382,9 @@ export default function GetStartedClient() {
               <ProposalPreview markdown={proposal} />
             ) : (
               <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-sm text-white/60">
-                {lang === 'ar' ? 'لم يتم إنشاء عرض بعد. اكتب/الصق الـRFP ثم اضغط إنشاء.' : 'No proposal yet. Paste the RFP then click Generate.'}
+                {lang === 'ar'
+                  ? 'لم يتم إنشاء عرض بعد. اكتب/الصق الـRFP ثم اضغط إنشاء.'
+                  : 'No proposal yet. Paste the RFP then click Generate.'}
               </div>
             )}
           </div>

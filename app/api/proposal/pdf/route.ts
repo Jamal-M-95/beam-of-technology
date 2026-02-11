@@ -3,9 +3,14 @@ import { PdfSchema } from "@/lib/validators";
 import { marked } from "marked";
 import fs from "fs";
 import path from "path";
-import puppeteer from "puppeteer";
+
+import puppeteer, { type Browser } from "puppeteer-core";
+
+import chromium from "@sparticuz/chromium";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 function logoDataUri() {
   try {
@@ -66,37 +71,46 @@ function toHtml(lang: "en" | "ar", md: string) {
 }
 
 export async function POST(req: Request) {
+  let browser: Browser | null = null;
+
   try {
     const body = await req.json();
     const parsed = PdfSchema.parse(body);
 
-    // Tip: Arabic shaping is best via Chromium rendering (this route uses Puppeteer)
     const html = toHtml(parsed.lang, parsed.proposalMarkdown);
 
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
-    });
+    browser = await puppeteer.launch({
+  args: chromium.args,
+  executablePath: await chromium.executablePath(),
+  headless: true,
+});
+
+
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
 
     const pdfBuffer = await page.pdf({
       format: "A4",
       printBackground: true,
-      margin: { top: "14mm", bottom: "14mm", left: "12mm", right: "12mm" }
+      margin: { top: "14mm", bottom: "14mm", left: "12mm", right: "12mm" },
     });
 
     await page.close();
     await browser.close();
 
-    return new NextResponse(pdfBuffer, {
+    // pdfBuffer is Uint8Array in some versions — ensure BodyInit
+    const bodyBuffer = Buffer.from(pdfBuffer);
+
+    return new NextResponse(bodyBuffer, {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="proposal-${parsed.lang}.pdf"`
-      }
+        "Content-Disposition": `attachment; filename="proposal-${parsed.lang}.pdf"`,
+      },
     });
   } catch (e: any) {
-    // Fallback: client will open /print
+    try {
+      await browser?.close();
+    } catch {}
     return NextResponse.json({ error: e?.message || "pdf_failed" }, { status: 400 });
   }
 }

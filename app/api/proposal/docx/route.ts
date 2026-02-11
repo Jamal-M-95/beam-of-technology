@@ -52,14 +52,18 @@ export async function POST(req: Request) {
       ],
     });
 
-    const buf = await Packer.toBuffer(doc);
+   const buf = await Packer.toBuffer(doc);
 
-    return new NextResponse(buf, {
-      headers: {
-        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="proposal-${lang}.docx"`,
-      },
-    });
+// ✅ NextResponse يحتاج BodyInit (Uint8Array / ArrayBuffer) وليس Buffer مباشرة
+const bytes = new Uint8Array(buf);
+
+return new NextResponse(bytes, {
+  headers: {
+    "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "Content-Disposition": `attachment; filename="proposal-${lang}.docx"`,
+  },
+});
+
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "docx_failed" }, { status: 400 });
   }
