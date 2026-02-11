@@ -35,10 +35,7 @@ function ProposalPreview({
       lang={lang}
       style={{ unicodeBidi: 'plaintext' }}
     >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        className="max-w-none text-sm leading-relaxed text-white/90"
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} className="max-w-none text-sm leading-relaxed text-white/90">
         {markdown}
       </ReactMarkdown>
     </div>
@@ -63,8 +60,9 @@ function cleanText(s: string) {
 }
 
 /**
- * Heuristic: Arabic PDF extraction sometimes comes out with almost no spaces
- * and long continuous Arabic runs (visual order / broken spacing).
+ * Arabic PDF extraction often comes out with:
+ * - extremely low spaces ratio
+ * - long continuous Arabic runs
  */
 function looksBrokenArabicPdf(text: string) {
   const t = text || '';
@@ -74,36 +72,35 @@ function looksBrokenArabicPdf(text: string) {
   const spaces = (t.match(/[ \t]/g) || []).length;
   const ratio = spaces / Math.max(1, t.length);
 
-  // too few spaces for long Arabic content → usually broken
-  if (ratio < 0.01) return true;
-
-  // very long continuous Arabic sequences
-  const longRun = /[\u0600-\u06FF]{25,}/.test(t);
-  return longRun;
+  if (ratio < 0.01) return true; // almost no spaces
+  if (/[\u0600-\u06FF]{25,}/.test(t)) return true; // very long run
+  return false;
 }
 
-type PdfItem = { str: string; x: number; y: number; w: number };
+/** ---------- PDF.js (client) ---------- */
 
-/**
- * PDF text extraction in the browser using pdfjs-dist (better RTL than server pdf-parse).
- */
+type PdfTextItem = {
+  str?: string;
+  transform?: number[];
+  width?: number;
+  hasEOL?: boolean;
+};
+
 async function extractPdfTextClient(file: File, onStatus?: (s: string) => void) {
   onStatus?.('Loading PDF engine...');
 
-  // pdfjs-dist@4.x (ESM)
-  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // pdfjs-dist@4 uses ESM builds under /build
+  // @ts-ignore - pdfjs build is ESM without TS typing on this path
+  const pdfjs: any = await import('pdfjs-dist/build/pdf.mjs');
 
-  // Set worker (works with Next bundling)
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
-    import.meta.url
-  ).toString();
+  // IMPORTANT: avoid bundling worker → use CDN worker
+  pdfjs.GlobalWorkerOptions.workerSrc =
+    'https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
 
   const data = new Uint8Array(await file.arrayBuffer());
 
   onStatus?.('Reading PDF pages...');
-  const loadingTask = pdfjs.getDocument({ data });
-  const pdf = await loadingTask.promise;
+  const pdf = await pdfjs.getDocument({ data }).promise;
 
   const numPages: number = pdf.numPages;
   let full = '';
@@ -114,19 +111,26 @@ async function extractPdfTextClient(file: File, onStatus?: (s: string) => void) 
     const page = await pdf.getPage(p);
     const tc = await page.getTextContent();
 
-    const items: PdfItem[] = (tc.items || [])
-      .filter((it: any) => typeof it?.str === 'string' && String(it.str).trim() !== '')
-      .map((it: any) => ({
-        str: String(it.str),
-        x: Number(it.transform?.[4] ?? 0),
-        y: Number(it.transform?.[5] ?? 0),
-        w: Number(it.width ?? 0),
-      }));
+    const rawItems: PdfTextItem[] = (tc.items || []) as PdfTextItem[];
 
-    const rtlLine = items.length ? isMostlyArabic(items.map((i: PdfItem) => i.str).join(' ')) : false;
+    const items = rawItems
+      .filter((it: PdfTextItem) => typeof it?.str === 'string' && (it.str as string).trim() !== '')
+      .map((it: PdfTextItem) => {
+        const tr = it.transform || [0, 0, 0, 0, 0, 0];
+        return {
+          str: (it.str as string) || '',
+          x: Number(tr[4] ?? 0),
+          y: Number(tr[5] ?? 0),
+          w: Number(it.width ?? 0),
+          eol: Boolean(it.hasEOL),
+        };
+      });
 
+    const rtlLine = items.length ? isMostlyArabic(items.map((i) => i.str).join(' ')) : false;
+
+    // Group by Y (line)
     const bucketY = (y: number) => Math.round(y * 2) / 2; // 0.5 buckets
-    const lines = new Map<number, PdfItem[]>();
+    const lines = new Map<number, typeof items>();
 
     for (const it of items) {
       const y = bucketY(it.y);
@@ -141,7 +145,7 @@ async function extractPdfTextClient(file: File, onStatus?: (s: string) => void) 
     for (const y of ys) {
       const lineItems = lines.get(y)!;
 
-      lineItems.sort((a: PdfItem, b: PdfItem) => (rtlLine ? b.x - a.x : a.x - b.x));
+      lineItems.sort((a: { x: number }, b: { x: number }) => (rtlLine ? b.x - a.x : a.x - b.x));
 
       let line = '';
       let prev: { x: number; w: number } | null = null;
@@ -164,34 +168,77 @@ async function extractPdfTextClient(file: File, onStatus?: (s: string) => void) 
   return cleanText(full);
 }
 
-/**
- * OCR fallback (client-side) using pdfjs-dist render -> tesseract.js recognize(canvas)
- * Only used when text extraction is empty/broken.
- */
+/** ---------- OCR (client) - load Tesseract from CDN to avoid Next/Webpack issues ---------- */
+
+declare global {
+  interface Window {
+    Tesseract?: any;
+    __tesseractLoading?: Promise<void>;
+  }
+}
+
+function loadScriptOnce(src: string) {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (window.__tesseractLoading) return window.__tesseractLoading;
+
+  window.__tesseractLoading = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      resolve();
+      return;
+    }
+
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('failed_to_load_tesseract'));
+    document.head.appendChild(s);
+  });
+
+  return window.__tesseractLoading;
+}
+
 async function ocrPdfClient(file: File, onStatus?: (s: string) => void) {
   onStatus?.('Preparing OCR...');
 
-  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
-    import.meta.url
-  ).toString();
+  // @ts-ignore
+  const pdfjs: any = await import('pdfjs-dist/build/pdf.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc =
+    'https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
 
-  // tesseract.js v7: createWorker() then worker.reinitialize('ara')
-  const tesseract: any = await import('tesseract.js');
-  const createWorker: () => Promise<any> = tesseract.createWorker;
+  // Load Tesseract (UMD) from CDN (no bundling, no webpack parse issues)
+  await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.0.1/tesseract.min.js');
+
+  if (!window.Tesseract) throw new Error('tesseract_not_available');
 
   const data = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjs.getDocument({ data }).promise;
 
-  // OCR is heavy — limit pages to protect UX
+  // OCR is heavy — limit pages
   const MAX_OCR_PAGES = 10;
-  const pages = Math.min(Number(pdf.numPages || 1), MAX_OCR_PAGES);
+  const pages = Math.min(pdf.numPages, MAX_OCR_PAGES);
 
-  onStatus?.('Downloading OCR language data (first time may take a bit)...');
+  onStatus?.('Initializing OCR engine (first time may download language)...');
 
-  const worker = await createWorker();
-  await worker.reinitialize('ara');
+  const worker = await window.Tesseract.createWorker({
+    logger: (m: { status?: string; progress?: number }) => {
+      const pct = typeof m.progress === 'number' ? ` (${Math.round(m.progress * 100)}%)` : '';
+      onStatus?.(`OCR: ${m.status || 'working'}${pct}`);
+    },
+  });
+
+  // Arabic + English helps mixed docs
+  const langs = 'ara+eng';
+  await worker.loadLanguage(langs);
+  await worker.initialize(langs);
+
+  // better spacing (if supported)
+  try {
+    await worker.setParameters({ preserve_interword_spaces: '1' });
+  } catch {
+    // ignore
+  }
 
   let full = '';
 
@@ -202,19 +249,21 @@ async function ocrPdfClient(file: File, onStatus?: (s: string) => void) {
     const viewport = page.getViewport({ scale: 2.0 });
 
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('canvas_context_failed');
-
+    const ctx = canvas.getContext('2d')!;
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
 
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     const res = await worker.recognize(canvas);
-    full += String(res?.data?.text || '') + '\n\n';
+    full += (res?.data?.text || '') + '\n\n';
   }
 
   await worker.terminate();
+
+  if (pdf.numPages > pages) {
+    full += `\n\n[OCR note] Only first ${pages} pages were OCR’d to keep performance reasonable.\n`;
+  }
 
   return cleanText(full);
 }
@@ -271,11 +320,12 @@ export default function GetStartedClient() {
 
     setIsExtracting(true);
     setExtractStatus(lang === 'ar' ? 'جاري التحضير...' : 'Preparing...');
+
     try {
       const name = (file.name || '').toLowerCase();
       const type = (file.type || '').toLowerCase();
 
-      // ✅ PDF: extract in the browser + OCR fallback if broken Arabic
+      // PDF: client-side extract + OCR fallback
       if (name.endsWith('.pdf') || type === 'application/pdf') {
         let text = await extractPdfTextClient(file, setExtractStatus);
 
@@ -296,7 +346,7 @@ export default function GetStartedClient() {
         return;
       }
 
-      // ✅ Non-PDF: use server extractor
+      // Non-PDF: keep server extractor
       setExtractStatus(lang === 'ar' ? 'جاري الرفع...' : 'Uploading...');
       const fd = new FormData();
       fd.append('file', file);
@@ -305,7 +355,7 @@ export default function GetStartedClient() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'extract_failed');
 
-      const extracted = String(data.text || '');
+      const extracted = (data.text || '') as string;
       setRfpText(extracted);
 
       if (data?.detectedLang === 'ar') setContentLang('ar');
@@ -317,8 +367,8 @@ export default function GetStartedClient() {
     } catch (e: any) {
       setRfpText(
         lang === 'ar'
-          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file?.name || ''}`
-          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file?.name || ''}`
+          ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file.name}`
+          : `Could not extract text from the file. Please paste the text manually.\n\nFile: ${file.name}`
       );
     } finally {
       setIsExtracting(false);
@@ -348,7 +398,7 @@ export default function GetStartedClient() {
 
       const assistantMsg: ChatMsg = {
         role: 'assistant',
-        content: String(data.reply ?? '...'),
+        content: (data.reply ?? '...') as string,
       };
 
       setMessages((p) => [...p, assistantMsg]);
@@ -378,7 +428,7 @@ export default function GetStartedClient() {
         }),
       });
       const data = await res.json();
-      const md = String((data.proposalMarkdown as string) || '');
+      const md = (data.proposalMarkdown as string) || '';
       setProposal(md);
 
       localStorage.setItem('last_proposal', md);
