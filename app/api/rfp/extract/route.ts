@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
-
-// ✅ pdf-parse has no default export in ESM in some versions → normalize import
-import * as pdfParseModule from "pdf-parse";
-const pdfParse: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
+import { PDFParse } from "pdf-parse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,8 +21,16 @@ function cleanText(s: string) {
 }
 
 async function pdfToText(fileBuffer: Buffer) {
-  const result = await pdfParse(fileBuffer);
-  return cleanText(result?.text || "");
+  // pdf-parse v2/v3 uses PDFParse class (no default export)
+  const parser = new PDFParse({ data: fileBuffer });
+
+  try {
+    const result = await parser.getText();
+    return cleanText(result?.text || "");
+  } finally {
+    // important to free resources
+    await parser.destroy();
+  }
 }
 
 async function docxToText(fileBuffer: Buffer) {
@@ -65,7 +70,8 @@ export async function POST(req: Request) {
     // DOCX
     if (
       name.endsWith(".docx") ||
-      type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      type ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
       const text = await docxToText(bytes);
       return NextResponse.json({
