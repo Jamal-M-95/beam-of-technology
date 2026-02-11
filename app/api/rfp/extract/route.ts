@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
+import { createRequire } from "module";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// ✅ pdf-parse v1.1.1 هو CommonJS
+const require = createRequire(import.meta.url);
+const pdfParse: any = require("pdf-parse");
 
 function isMostlyArabic(s: string) {
   const ar = (s.match(/[\u0600-\u06FF]/g) || []).length;
@@ -19,54 +24,14 @@ function cleanText(s: string) {
     .trim();
 }
 
-async function ensurePdfPolyfills() {
-  // pdf.js needs DOMMatrix in Node (Vercel serverless)
-  if ((globalThis as any).DOMMatrix) return;
-
-  const canvasMod = await import("@napi-rs/canvas");
-
-  // @ts-ignore
-  if (!(globalThis as any).DOMMatrix && (canvasMod as any).DOMMatrix) {
-    // @ts-ignore
-    (globalThis as any).DOMMatrix = (canvasMod as any).DOMMatrix;
-  }
-
-  // (optional but helps if pdf.js asks for them)
-  // @ts-ignore
-  if (!(globalThis as any).ImageData && (canvasMod as any).ImageData) {
-    // @ts-ignore
-    (globalThis as any).ImageData = (canvasMod as any).ImageData;
-  }
-  // @ts-ignore
-  if (!(globalThis as any).Path2D && (canvasMod as any).Path2D) {
-    // @ts-ignore
-    (globalThis as any).Path2D = (canvasMod as any).Path2D;
-  }
-}
-
 async function pdfToText(fileBuffer: Buffer) {
-  await ensurePdfPolyfills();
-
-  // ✅ dynamic import AFTER polyfills (so it doesn't crash on import)
-  const mod: any = await import("pdf-parse");
-  const PDFParseCtor = mod.PDFParse ?? mod.default;
-  if (!PDFParseCtor) throw new Error("pdf_parse_export_missing");
-
-  const parser = new PDFParseCtor({ data: fileBuffer });
-
-  try {
-    const result = await parser.getText();
-    return cleanText(result?.text || "");
-  } finally {
-    if (typeof parser.destroy === "function") {
-      await parser.destroy();
-    }
-  }
+  const result = await pdfParse(fileBuffer);
+  return cleanText(result?.text || "");
 }
 
 async function docxToText(fileBuffer: Buffer) {
   const result = await mammoth.extractRawText({ buffer: fileBuffer });
-  return cleanText(result.value || "");
+  return cleanText(result?.value || "");
 }
 
 export async function POST(req: Request) {
@@ -101,8 +66,7 @@ export async function POST(req: Request) {
     // DOCX
     if (
       name.endsWith(".docx") ||
-      type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
       const text = await docxToText(bytes);
       return NextResponse.json({
