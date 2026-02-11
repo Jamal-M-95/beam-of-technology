@@ -3,7 +3,8 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  serverExternalPackages: ["pdf-parse"],
+  // ✅ Next 14
+  serverComponentsExternalPackages: ["pdf-parse"],
 };
 
 export default nextConfig;
