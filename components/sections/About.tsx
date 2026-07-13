@@ -3,13 +3,16 @@
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import { useLang } from "@/components/LanguageProvider";
 
 export default function About() {
+  const { lang } = useLang();
+
   const stats = [
-    { label: "Monitoring & Support", value: "24/7" },
-    { label: "Service Reliability", value: "99.9%" },
-    { label: "Incident Response", value: "<1 Day" },
-    { label: "Automated Delivery", value: "CI/CD" },
+    { label: lang === "ar" ? "المراقبة والدعم" : "Monitoring & Support", value: "24/7" },
+    { label: lang === "ar" ? "موثوقية الخدمة" : "Service Reliability", value: "99.9%" },
+    { label: lang === "ar" ? "الاستجابة للحوادث" : "Incident Response", value: "<1 Day" },
+    { label: lang === "ar" ? "التسليم المؤتمت" : "Automated Delivery", value: "CI/CD" },
   ];
 
   return (
@@ -26,25 +29,25 @@ export default function About() {
           className="max-w-5xl mx-auto text-center"
         >
           <span className="text-primary text-sm font-bold tracking-widest uppercase mb-4 block">
-            About BEAM
+            {lang === "ar" ? "عن BEAM" : "About BEAM"}
           </span>
 
           <h2 className="text-4xl md:text-6xl font-display font-bold mb-6 leading-tight">
-            We build, run, and evolve <br />
+            {lang === "ar" ? "نبني ونشغّل ونطوّر" : "We build, run, and evolve"} <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-secondary">
-              modern digital foundations
+              {lang === "ar" ? "بنى رقمية حديثة" : "modern digital foundations"}
             </span>
           </h2>
 
           <p className="text-lg md:text-xl text-gray-400 mb-10 leading-relaxed">
-            BEAM.Of Technology helps teams deliver reliable IT operations, accelerate cloud adoption,
-            automate delivery with DevOps, and build modern web platforms. From strategy to execution,
-            we focus on security, performance, and scalability—so your technology stays strong as you grow.
+            {lang === "ar"
+              ? "تساعد BEAM.Of Technology الفرق على تشغيل التقنية بثبات، وتسريع تبنّي السحابة، وأتمتة التسليم عبر DevOps، وبناء منصات ويب حديثة. من الاستراتيجية إلى التنفيذ، نركّز على الأمان والأداء وقابلية التوسع حتى تبقى تقنيتك قوية مع نمو أعمالك."
+              : "BEAM.Of Technology helps teams deliver reliable IT operations, accelerate cloud adoption, automate delivery with DevOps, and build modern web platforms. From strategy to execution, we focus on security, performance, and scalability so your technology stays strong as you grow."}
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-12">
             <Button asChild className="px-8">
-              <Link href="/contact">Talk to Us</Link>
+              <Link href="/contact">{lang === "ar" ? "تحدث معنا" : "Talk to Us"}</Link>
             </Button>
 
             <Button
@@ -52,7 +55,7 @@ export default function About() {
               variant="outline"
               className="px-8 border-white/15 text-white hover:bg-white/5"
             >
-              <Link href="/services">View Services</Link>
+              <Link href="/services">{lang === "ar" ? "عرض الخدمات" : "View Services"}</Link>
             </Button>
           </div>
 

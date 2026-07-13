@@ -8,9 +8,14 @@ import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { motion } from "framer-motion";
+import { LanguageToggle } from "@/components/LanguageToggle";
+import { useLang } from "@/components/LanguageProvider";
+import { t } from "@/lib/i18n";
 
 export default function Navbar() {
+  const { lang } = useLang();
   const [isScrolled, setIsScrolled] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -19,11 +24,15 @@ export default function Navbar() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
+  useEffect(() => {
+    setIsMobileMenuOpen(false);
+  }, [pathname]);
+
   const navLinks = [
-    { name: "Home", href: "/" },
-    { name: "About", href: "/about" },
-    { name: "Services", href: "/services" },
-    { name: "Contact Us", href: "/contact" },
+    { name: t(lang, "nav_home"), href: "/" },
+    { name: t(lang, "nav_about"), href: "/about" },
+    { name: t(lang, "nav_services"), href: "/services" },
+    { name: t(lang, "nav_contact"), href: "/contact" },
   ];
 
   return (
@@ -74,19 +83,20 @@ export default function Navbar() {
               {link.name}
             </Link>
           ))}
+          <LanguageToggle />
           <Link href="/get-started">
             <Button
               variant="outline"
               className="border-primary/50 text-primary hover:bg-primary/10 hover:text-primary-foreground hover:border-primary transition-all duration-300"
             >
-              Get Started
+              {t(lang, "get_started")}
             </Button>
           </Link>
         </div>
 
         {/* Mobile Nav */}
         <div className="md:hidden">
-          <Sheet>
+          <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="text-white">
                 <Menu className="w-6 h-6" />
@@ -98,6 +108,7 @@ export default function Navbar() {
                   <Link
                     key={link.name}
                     href={link.href}
+                    onClick={() => setIsMobileMenuOpen(false)}
                     className={`text-2xl font-display font-medium transition-colors ${
                       pathname === link.href ? "text-primary" : "text-white hover:text-primary"
                     }`}
@@ -105,8 +116,9 @@ export default function Navbar() {
                     {link.name}
                   </Link>
                 ))}
-                <Link href="/get-started">
-                  <Button className="bg-primary text-background hover:bg-primary/90 w-full">Get Started</Button>
+                <LanguageToggle />
+                <Link href="/get-started" onClick={() => setIsMobileMenuOpen(false)}>
+                  <Button className="bg-primary text-background hover:bg-primary/90 w-full">{t(lang, "get_started")}</Button>
                 </Link>
               </div>
             </SheetContent>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ProposalSchema } from "@/lib/validators";
 import { getGroq, getModel } from "@/lib/groq";
+import { claimAttempt } from "@/lib/ip-attempts";
 import { systemPrompt, proposalPrompt } from "@/lib/prompts";
 
 export const runtime = "nodejs";
@@ -9,6 +10,18 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const parsed = ProposalSchema.parse(body);
+
+    const claim = await claimAttempt(req, "proposal");
+    if (!claim.ok) {
+      return NextResponse.json(
+        {
+          error: "proposal_locked",
+          messageAr: "لقد وصلت إلى الحد من المحاولات. للمزيد من المساعدة في متطلباتك والحصول على استشارة أقوى، يرجى التواصل معنا.",
+          messageEn: "You have reached the maximum number of attempts. For more support with your requirements and a stronger consultation, please contact us.",
+        },
+        { status: 429 }
+      );
+    }
 
     const groq = getGroq();
     const model = getModel();

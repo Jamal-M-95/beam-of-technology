@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
 import { createRequire } from "module";
+import { claimAttempt } from "@/lib/ip-attempts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -160,6 +161,18 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const file = form.get("file") as File | null;
     if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
+
+    const claim = await claimAttempt(req, "requirement");
+    if (!claim.ok) {
+      return NextResponse.json(
+        {
+          error: "requirement_locked",
+          messageAr: "تم استخدام محاولة الرفع أو اللصق لهذا المستخدم.",
+          messageEn: "The upload or paste attempt for this user has already been used.",
+        },
+        { status: 429 }
+      );
+    }
 
     const bytes = Buffer.from(await file.arrayBuffer());
     const name = (file.name || "").toLowerCase();

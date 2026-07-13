@@ -1,10 +1,12 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { useLang } from '@/components/LanguageProvider';
+import { useToast } from '@/hooks/use-toast';
 import { t } from '@/lib/i18n';
 
 type Lang = 'en' | 'ar';
@@ -272,10 +274,13 @@ async function ocrPdfClient(file: File, onStatus?: (s: string) => void) {
 
 export default function GetStartedClient() {
   const { lang } = useLang();
+  const { toast } = useToast();
 
   const [contentLang, setContentLang] = useState<Lang>(lang);
 
   const [rfpText, setRfpText] = useState('');
+  const [requirementLocked, setRequirementLocked] = useState(false);
+  const [proposalLocked, setProposalLocked] = useState(false);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [proposal, setProposal] = useState<string>('');
@@ -301,8 +306,8 @@ export default function GetStartedClient() {
         role: 'assistant',
         content:
           lang === 'ar'
-            ? 'مرحبًا! ارفع ملف الـRFP أو الصق النص، ثم اسألني أي شيء قبل إنشاء العرض الفني.'
-            : 'Hi! Upload the RFP or paste its text, then ask me anything before generating your proposal.',
+            ? 'مرحبًا! ارفع ملف المتطلبات أو الصق النص، ثم اسألني أي شيء قبل إنشاء العرض الفني.'
+            : 'Hi! Upload the requirement file or paste its text, then ask me anything before generating your proposal.',
       };
 
       return [welcome, ...rest];
@@ -315,8 +320,115 @@ export default function GetStartedClient() {
 
   const canGenerate = useMemo(() => rfpText.trim().length > 20, [rfpText]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAttemptStatus() {
+      try {
+        const res = await fetch('/api/attempts', { cache: 'no-store' });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (cancelled) return;
+
+        setRequirementLocked(Boolean(data?.requirementLocked));
+        setProposalLocked(Boolean(data?.proposalLocked));
+      } catch {
+        // Ignore status fetch errors and let server enforce the lock.
+      }
+    }
+
+    loadAttemptStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function resetGeneratedProposal() {
+    setProposal('');
+    localStorage.removeItem('last_proposal');
+    localStorage.removeItem('last_proposal_lang');
+  }
+
+  function showLockedNotice() {
+    toast({
+      title: lang === 'ar' ? 'هل تحتاج دعماً إضافياً؟' : 'Need more support?',
+      description:
+        lang === 'ar'
+          ? (
+              <>
+                لقد وصلت إلى الحد من المحاولات. للمزيد من المساعدة في متطلباتك وتقديم استشارة أقوى، يرجى{" "}
+                <Link href="/contact" className="font-semibold underline underline-offset-4">
+                  التواصل معنا
+                </Link>
+                .
+              </>
+            )
+          : (
+              <>
+                You have reached the maximum number of attempts. For more support with your requirements and a stronger consultation, please{" "}
+                <Link href="/contact" className="font-semibold underline underline-offset-4">
+                  contact us
+                </Link>
+                .
+              </>
+            ),
+      variant: 'destructive',
+    });
+  }
+
+  function showProposalLockedNotice() {
+    toast({
+      title: lang === 'ar' ? 'هل تحتاج دعماً إضافياً؟' : 'Need more support?',
+      description:
+        lang === 'ar'
+          ? (
+              <>
+                لقد وصلت إلى الحد من المحاولات. للمزيد من المساعدة في متطلباتك وتقديم استشارة أقوى، يرجى{" "}
+                <Link href="/contact" className="font-semibold underline underline-offset-4">
+                  التواصل معنا
+                </Link>
+                .
+              </>
+            )
+          : (
+              <>
+                You have reached the maximum number of attempts. For more support with your requirements and a stronger consultation, please{" "}
+                <Link href="/contact" className="font-semibold underline underline-offset-4">
+                  contact us
+                </Link>
+                .
+              </>
+            ),
+      variant: 'destructive',
+    });
+  }
+
+  async function claimRequirementAttempt() {
+    const res = await fetch('/api/attempts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'requirement' }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      setRequirementLocked(Boolean(data?.requirementLocked ?? true));
+      showLockedNotice();
+      return false;
+    }
+
+    setRequirementLocked(true);
+    return true;
+  }
+
   async function onUpload(file: File | null) {
     if (!file) return;
+    if (requirementLocked) {
+      showLockedNotice();
+      return;
+    }
 
     setIsExtracting(true);
     setExtractStatus(lang === 'ar' ? 'جاري التحضير...' : 'Preparing...');
@@ -338,10 +450,8 @@ export default function GetStartedClient() {
 
         setRfpText(text);
         setContentLang(isMostlyArabic(text) ? 'ar' : 'en');
-
-        setProposal('');
-        localStorage.removeItem('last_proposal');
-        localStorage.removeItem('last_proposal_lang');
+        setRequirementLocked(true);
+        resetGeneratedProposal();
 
         return;
       }
@@ -361,10 +471,15 @@ export default function GetStartedClient() {
       if (data?.detectedLang === 'ar') setContentLang('ar');
       else if (data?.detectedLang === 'en') setContentLang('en');
 
-      setProposal('');
-      localStorage.removeItem('last_proposal');
-      localStorage.removeItem('last_proposal_lang');
+      setRequirementLocked(true);
+      resetGeneratedProposal();
     } catch (e: any) {
+      if (String(e?.message || '').includes('requirement_locked')) {
+        setRequirementLocked(true);
+        showLockedNotice();
+        return;
+      }
+
       setRfpText(
         lang === 'ar'
           ? `تعذر استخراج النص من الملف. الصق النص يدويًا.\n\nالملف: ${file.name}`
@@ -374,6 +489,35 @@ export default function GetStartedClient() {
       setIsExtracting(false);
       setExtractStatus('');
     }
+  }
+
+  async function onRequirementPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (requirementLocked) {
+      e.preventDefault();
+      showLockedNotice();
+      return;
+    }
+
+    e.preventDefault();
+
+    const pastedText = e.clipboardData.getData('text');
+    if (!pastedText.trim()) return;
+
+    const claimed = await claimRequirementAttempt();
+    if (!claimed) return;
+
+    setRfpText(pastedText);
+    setContentLang(isMostlyArabic(pastedText) ? 'ar' : 'en');
+    resetGeneratedProposal();
+  }
+
+  function onRequirementTextChange(value: string) {
+    if (requirementLocked && value !== rfpText) {
+      showLockedNotice();
+      return;
+    }
+
+    setRfpText(value);
   }
 
   async function sendChat() {
@@ -415,6 +559,11 @@ export default function GetStartedClient() {
 
   async function generate(mode: 'fresh' | 'regen') {
     if (!canGenerate) return;
+    if (proposalLocked) {
+      showProposalLockedNotice();
+      return;
+    }
+
     setIsGenerating(true);
     try {
       const res = await fetch('/api/proposal', {
@@ -427,9 +576,19 @@ export default function GetStartedClient() {
           previousProposal: mode === 'regen' ? proposal : undefined,
         }),
       });
+
+      if (res.status === 429) {
+        setProposalLocked(true);
+        showProposalLockedNotice();
+        return;
+      }
+
       const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'proposal_failed');
+
       const md = (data.proposalMarkdown as string) || '';
       setProposal(md);
+      setProposalLocked(true);
 
       localStorage.setItem('last_proposal', md);
       localStorage.setItem('last_proposal_lang', contentLang);
@@ -501,6 +660,7 @@ export default function GetStartedClient() {
               type="file"
               accept=".txt,.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
               className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/80 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-600/70 file:px-4 file:py-2 file:text-sm file:font-bold file:text-white hover:file:bg-blue-600"
+              disabled={requirementLocked || isExtracting}
               onChange={(e) => onUpload(e.target.files?.[0] ?? null)}
             />
 
@@ -514,27 +674,73 @@ export default function GetStartedClient() {
 
             <textarea
               value={rfpText}
-              onChange={(e) => setRfpText(e.target.value)}
+              onChange={(e) => onRequirementTextChange(e.target.value)}
+              onPaste={onRequirementPaste}
               dir={dir}
               lang={contentLang}
               style={{ unicodeBidi: 'plaintext' }}
+              readOnly={requirementLocked}
               className={
                 'h-44 w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-white/40 outline-none focus:border-blue-500/60 ' +
                 (isRtl ? 'text-right' : 'text-left')
               }
-              placeholder={lang === 'ar' ? 'الصق نص الـRFP هنا...' : 'Paste the RFP text here...'}
+              placeholder={lang === 'ar' ? 'الصق نص المتطلبات هنا...' : 'Paste the requirement text here...'}
             />
 
+            {requirementLocked ? (
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+                {lang === 'ar' ? (
+                  <>
+                    لقد وصلت إلى الحد من المحاولات. للمزيد من المساعدة في متطلباتك وتقديم استشارة أقوى، يرجى{" "}
+                    <Link href="/contact" className="font-semibold underline underline-offset-4">
+                      التواصل معنا
+                    </Link>
+                    .
+                  </>
+                ) : (
+                  <>
+                    You have reached the maximum number of attempts. For more support with your requirements and a stronger consultation, please{" "}
+                    <Link href="/contact" className="font-semibold underline underline-offset-4">
+                      contact us
+                    </Link>
+                    .
+                  </>
+                )}
+              </div>
+            ) : null}
+
             <button
-              disabled={!canGenerate || isGenerating}
+              disabled={!canGenerate || isGenerating || proposalLocked}
               onClick={() => generate('fresh')}
               className={
                 'w-full rounded-xl px-4 py-3 text-sm font-extrabold text-white shadow-glow ' +
-                (canGenerate && !isGenerating ? 'bg-blue-600/80 hover:bg-blue-600' : 'cursor-not-allowed bg-white/10')
+                (canGenerate && !isGenerating && !proposalLocked ? 'bg-blue-600/80 hover:bg-blue-600' : 'cursor-not-allowed bg-white/10')
               }
             >
               {isGenerating ? (lang === 'ar' ? 'جاري الإنشاء...' : 'Generating...') : t(lang, 'generate_btn')}
             </button>
+
+            {proposalLocked ? (
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+                {lang === 'ar' ? (
+                  <>
+                    لقد وصلت إلى الحد من المحاولات. للمزيد من المساعدة في متطلباتك وتقديم استشارة أقوى، يرجى{" "}
+                    <Link href="/contact" className="font-semibold underline underline-offset-4">
+                      التواصل معنا
+                    </Link>
+                    .
+                  </>
+                ) : (
+                  <>
+                    You have reached the maximum number of attempts. For more support with your requirements and a stronger consultation, please{" "}
+                    <Link href="/contact" className="font-semibold underline underline-offset-4">
+                      contact us
+                    </Link>
+                    .
+                  </>
+                )}
+              </div>
+            ) : null}
 
             {rfpText.trim() ? (
               <div className="text-xs text-white/50">
@@ -612,11 +818,11 @@ export default function GetStartedClient() {
               </button>
 
               <button
-                disabled={!proposal || isGenerating}
+                disabled={!proposal || isGenerating || proposalLocked}
                 onClick={() => generate('regen')}
                 className={
                   'rounded-xl px-4 py-2 text-sm font-bold ' +
-                  (proposal && !isGenerating
+                  (proposal && !isGenerating && !proposalLocked
                     ? 'bg-blue-600/70 hover:bg-blue-600'
                     : 'cursor-not-allowed bg-white/5 text-white/40')
                 }

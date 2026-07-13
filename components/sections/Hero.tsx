@@ -4,8 +4,12 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles } from "lucide-react";
+import { useLang } from "@/components/LanguageProvider";
+import { t } from "@/lib/i18n";
 
 export default function Hero() {
+  const { lang } = useLang();
+
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden pt-20">
       {/* Background Image with Overlay */}
@@ -27,7 +31,7 @@ export default function Hero() {
         >
           <Sparkles className="w-4 h-4 text-primary animate-pulse" />
           <span className="">
-            Build. Run. Improve
+            {lang === "ar" ? "ابنِ. شغّل. طوّر" : "Build. Run. Improve"}
           </span>
         </motion.div>
 
@@ -37,8 +41,8 @@ export default function Hero() {
           transition={{ duration: 0.8, delay: 0.2 }}
           className="text-5xl md:text-7xl lg:text-8xl font-display font-bold leading-tight mb-6"
         >
-          Run smarter. Scale faster <br />
-          <span className="beam-gradient">Modern IT & Cloud Services</span>
+          {lang === "ar" ? "شغّل بذكاء. توسّع بسرعة" : "Run smarter. Scale faster"} <br />
+          <span className="beam-gradient">{lang === "ar" ? "خدمات تقنية وسحابة حديثة" : "Modern IT & Cloud Services"}</span>
         </motion.h1>
 
         <motion.p
@@ -47,7 +51,9 @@ export default function Hero() {
           transition={{ duration: 0.8, delay: 0.4 }}
           className="text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed"
         >
-          BEAM.Of Technology keeps your IT reliable, your cloud ready, and your delivery fast.
+          {lang === "ar"
+            ? "تجعل BEAM.Of Technology بيئة التقنية لديك أكثر موثوقية، وسحابتك أكثر جاهزية، وتنفيذك أسرع."
+            : "BEAM.Of Technology keeps your IT reliable, your cloud ready, and your delivery fast."}
         </motion.p>
 
         <motion.div
@@ -61,7 +67,7 @@ export default function Hero() {
               size="lg"
               className="bg-primary text-background hover:bg-primary/90 rounded-full px-8 h-12 text-base font-semibold group"
             >
-              Get Started
+              {t(lang, "get_started")}
               <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
             </Button>
           </Link>
@@ -71,7 +77,7 @@ export default function Hero() {
               variant="outline"
               className="border-white/20 text-white hover:bg-white/10 rounded-full px-8 h-12 text-base"
             >
-              View Services
+              {lang === "ar" ? "عرض الخدمات" : "View Services"}
             </Button>
           </Link>
         </motion.div>

@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { useLang } from "@/components/LanguageProvider";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -138,6 +139,7 @@ const formSchema = z.object({
 
 export default function Contact() {
   const { toast } = useToast();
+  const { lang } = useLang();
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -172,8 +174,11 @@ export default function Contact() {
       if (!res.ok) throw new Error(data?.error || "send_failed");
 
       toast({
-        title: "Message Sent",
-        description: "We have received your message. We'll get back to you soon.",
+        title: lang === "ar" ? "تم إرسال الرسالة" : "Message Sent",
+        description:
+          lang === "ar"
+            ? "تم استلام رسالتك وسنتواصل معك قريبًا."
+            : "We have received your message. We'll get back to you soon.",
       });
 
       form.reset({
@@ -187,9 +192,11 @@ export default function Contact() {
     } catch (err: any) {
       console.error("[contact] send failed", err);
       toast({
-        title: "Failed to send",
+        title: lang === "ar" ? "تعذر الإرسال" : "Failed to send",
         description:
-          "We couldn't send your message right now. Please try again or email us directly.",
+          lang === "ar"
+            ? "تعذر إرسال رسالتك الآن. حاول مرة أخرى أو راسلنا مباشرة عبر البريد."
+            : "We couldn't send your message right now. Please try again or email us directly.",
         variant: "destructive",
       });
     }
@@ -205,19 +212,25 @@ export default function Contact() {
             viewport={{ once: true }}
           >
             <h2 className="text-4xl md:text-5xl font-display font-bold mb-6">
-              Initiate <span className="text-primary">Contact</span>
+              {lang === "ar" ? (
+                <>ابدأ <span className="text-primary">التواصل</span></>
+              ) : (
+                <>Initiate <span className="text-primary">Contact</span></>
+              )}
             </h2>
             <p className="text-gray-400 mb-8 text-lg">
-              Ready to build something reliable and scalable? Fill out the form and we’ll reach out to schedule a consultation.
+              {lang === "ar"
+                ? "جاهز لبناء حل موثوق وقابل للتوسع؟ املأ النموذج وسنتواصل معك لترتيب استشارة."
+                : "Ready to build something reliable and scalable? Fill out the form and we’ll reach out to schedule a consultation."}
             </p>
 
             <div className="space-y-6">
               <div className="glass-panel p-6 rounded-xl border-l-4 border-primary">
-                <h3 className="text-xl font-bold mb-2">Technical Support</h3>
+                <h3 className="text-xl font-bold mb-2">{lang === "ar" ? "الدعم الفني" : "Technical Support"}</h3>
                 <p className="text-gray-400">support@beam.tech</p>
               </div>
               <div className="glass-panel p-6 rounded-xl border-l-4 border-secondary">
-                <h3 className="text-xl font-bold mb-2">Enterprise Sales</h3>
+                <h3 className="text-xl font-bold mb-2">{lang === "ar" ? "مبيعات الشركات" : "Enterprise Sales"}</h3>
                 <p className="text-gray-400">sales@beam.tech</p>
               </div>
             </div>
@@ -237,10 +250,10 @@ export default function Contact() {
                       name="name"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel className="text-gray-300">Name</FormLabel>
+                          <FormLabel className="text-gray-300">{lang === "ar" ? "الاسم" : "Name"}</FormLabel>
                           <FormControl>
                             <Input
-                              placeholder="John Doe"
+                              placeholder={lang === "ar" ? "اسمك" : "Your name"}
                               {...field}
                               className="bg-black/20 border-white/10 focus:border-primary/50 text-white"
                             />
@@ -257,10 +270,10 @@ export default function Contact() {
     name="company"
     render={({ field }) => (
       <FormItem className="md:col-span-4">
-        <FormLabel className="text-gray-300">Company Name</FormLabel>
+        <FormLabel className="text-gray-300">{lang === "ar" ? "اسم الشركة" : "Company Name"}</FormLabel>
         <FormControl>
           <Input
-            placeholder="Beam.Of Technology"
+            placeholder={lang === "ar" ? "اسم شركتك" : "Your company"}
             {...field}
             className="bg-black/20 border-white/10 focus:border-primary/50 text-white"
           />
@@ -276,11 +289,11 @@ export default function Contact() {
     name="country"
     render={({ field }) => (
       <FormItem className="md:col-span-4">
-        <FormLabel className="text-gray-300">Phone Number</FormLabel>
+        <FormLabel className="text-gray-300">{lang === "ar" ? "رقم الهاتف" : "Phone Number"}</FormLabel>
         <Select value={field.value} onValueChange={field.onChange}>
           <FormControl>
             <SelectTrigger className="bg-black/20 border-white/10 focus:border-primary/50 text-white">
-              <SelectValue placeholder="Select country" />
+              <SelectValue placeholder={lang === "ar" ? "اختر الدولة" : "Select country"} />
             </SelectTrigger>
           </FormControl>
           <SelectContent className="max-h-[320px] overflow-y-auto">
@@ -303,7 +316,7 @@ export default function Contact() {
     render={({ field }) => (
       <FormItem className="md:col-span-4">
         <FormLabel className="text-gray-300 opacity-0 select-none">
-          Phone
+          {lang === "ar" ? "الهاتف" : "Phone"}
         </FormLabel>
         <FormControl>
           <Input
@@ -325,10 +338,10 @@ export default function Contact() {
                       name="email"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel className="text-gray-300">Email</FormLabel>
+                          <FormLabel className="text-gray-300">{lang === "ar" ? "البريد الإلكتروني" : "Email"}</FormLabel>
                           <FormControl>
                             <Input
-                              placeholder="john@example.com"
+                              placeholder={lang === "ar" ? "بريدك الإلكتروني" : "Your email"}
                               {...field}
                               className="bg-black/20 border-white/10 focus:border-primary/50 text-white"
                             />
@@ -343,10 +356,10 @@ export default function Contact() {
                       name="message"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel className="text-gray-300">Message</FormLabel>
+                          <FormLabel className="text-gray-300">{lang === "ar" ? "الرسالة" : "Message"}</FormLabel>
                           <FormControl>
                             <Textarea
-                              placeholder="Tell us about your project..."
+                              placeholder={lang === "ar" ? "اكتب لنا تفاصيل مشروعك..." : "Tell us about your project..."}
                               className="min-h-[120px] bg-black/20 border-white/10 focus:border-primary/50 text-white"
                               {...field}
                             />
@@ -360,7 +373,7 @@ export default function Contact() {
                       type="submit"
                       className="w-full bg-primary text-background hover:bg-primary/90 font-bold"
                     >
-                      Transmit Message
+                      {lang === "ar" ? "إرسال الرسالة" : "Send Message"}
                     </Button>
                   </form>
                 </Form>

@@ -3,42 +3,63 @@
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
 import { BrainCircuit, Database, Globe, Lock, Zap, Network } from "lucide-react";
-
-const features = [
-  {
-    icon: BrainCircuit,
-    title: "Managed IT Services",
-    description: "24/7 monitoring, incident response, patching, and SLA-driven support to keep operations running smoothly.",
-  },
-  {
-    icon: Database,
-    title: "Cloud Adoption",
-    description: "Cloud strategy, migration, and optimization with secure foundations and cost-efficient design.",
-  },
-  {
-    icon: Globe,
-    title: "DevOps Automation",
-    description: "CI/CD pipelines, Infrastructure as Code, and automated deployments to ship faster with confidence.",
-  },
-  {
-    icon: Lock,
-    title: "Security & Compliance",
-    description: "Hardening, access control, and best-practice policies to reduce risk and meet compliance needs.",
-  },
-  {
-    icon: Zap,
-    title: "Performance & Observability",
-    description: "End-to-end monitoring and tuning to improve reliability, visibility, and user experience.",
-  },
-  {
-    icon: Network,
-    title: "Web Development",
-    description: "Modern, responsive websites and portals built for speed, scalability, and long-term growth.",
-  },
-];
+import { useLang } from "@/components/LanguageProvider";
 
 
 export default function Features() {
+  const { lang } = useLang();
+
+  const features = [
+    {
+      icon: BrainCircuit,
+      title: lang === "ar" ? "الخدمات التقنية المُدارة" : "Managed IT Services",
+      description:
+        lang === "ar"
+          ? "مراقبة ودعم واستجابة للحوادث على مدار الساعة للحفاظ على استمرارية التشغيل."
+          : "24/7 monitoring, incident response, patching, and SLA-driven support to keep operations running smoothly.",
+    },
+    {
+      icon: Database,
+      title: lang === "ar" ? "تبنّي السحابة" : "Cloud Adoption",
+      description:
+        lang === "ar"
+          ? "استراتيجية سحابية وهجرة وتحسين ببنية آمنة وتصميم فعّال من حيث التكلفة."
+          : "Cloud strategy, migration, and optimization with secure foundations and cost-efficient design.",
+    },
+    {
+      icon: Globe,
+      title: lang === "ar" ? "أتمتة DevOps" : "DevOps Automation",
+      description:
+        lang === "ar"
+          ? "خطوط CI/CD وبنية تحتية ككود ونشر مؤتمت لتسليم أسرع بثقة."
+          : "CI/CD pipelines, Infrastructure as Code, and automated deployments to ship faster with confidence.",
+    },
+    {
+      icon: Lock,
+      title: lang === "ar" ? "الأمان والامتثال" : "Security & Compliance",
+      description:
+        lang === "ar"
+          ? "تقوية الأنظمة والتحكم بالوصول وسياسات عملية لتقليل المخاطر وتلبية متطلبات الامتثال."
+          : "Hardening, access control, and best-practice policies to reduce risk and meet compliance needs.",
+    },
+    {
+      icon: Zap,
+      title: lang === "ar" ? "الأداء والرصد" : "Performance & Observability",
+      description:
+        lang === "ar"
+          ? "مراقبة شاملة وتحسين مستمر لرفع الاعتمادية والوضوح وتجربة المستخدم."
+          : "End-to-end monitoring and tuning to improve reliability, visibility, and user experience.",
+    },
+    {
+      icon: Network,
+      title: lang === "ar" ? "تطوير الويب" : "Web Development",
+      description:
+        lang === "ar"
+          ? "مواقع ومنصات حديثة ومتجاوبة مبنية للسرعة وقابلية التوسع والنمو الطويل."
+          : "Modern, responsive websites and portals built for speed, scalability, and long-term growth.",
+    },
+  ];
+
   return (
     <section id="technology" className="py-24 relative overflow-hidden bg-background">
       <div className="container mx-auto px-6">
@@ -49,7 +70,8 @@ export default function Features() {
             viewport={{ once: true }}
             className="text-3xl md:text-5xl font-display font-bold mb-6"
           >
-            Core <span className="text-primary">Capabilities</span>
+            {lang === "ar" ? "القدرات " : "Core "}
+            <span className="text-primary">{lang === "ar" ? "الأساسية" : "Capabilities"}</span>
           </motion.h2>
           <motion.p 
             initial={{ opacity: 0, y: 20 }}
@@ -58,7 +80,9 @@ export default function Features() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 max-w-2xl mx-auto"
           >
-            BEAM.Of Technology combine strong engineering with practical execution.
+            {lang === "ar"
+              ? "تجمع BEAM.Of Technology بين الهندسة القوية والتنفيذ العملي."
+              : "BEAM.Of Technology combines strong engineering with practical execution."}
           </motion.p>
         </div>
 
@@ -84,23 +108,25 @@ export default function Features() {
             transition={{ duration: 0.8 }}
           >
             <h3 className="text-3xl font-display font-bold mb-6 text-white">
-              Autonomous Intelligence
+              {lang === "ar" ? "قدرات تشغيل ذكية" : "Autonomous Intelligence"}
             </h3>
             <p className="text-gray-400 mb-6 leading-relaxed">
-              Beam.Of Technology goes beyond building software—we engineer dependable digital foundations. From cloud adoption and DevOps automation to managed IT services and modern web platforms, we design solutions that are secure, scalable, and built for real-world operations. The result: faster delivery, smoother performance, and technology that stays strong as your business grows.
+              {lang === "ar"
+                ? "تتجاوز Beam.Of Technology مجرد بناء البرمجيات؛ نحن نبني أساسات رقمية يمكن الاعتماد عليها. من تبنّي السحابة وأتمتة DevOps إلى الخدمات التقنية المُدارة ومنصات الويب الحديثة، نصمم حلولاً آمنة وقابلة للتوسع ومهيأة للتشغيل الواقعي."
+                : "Beam.Of Technology goes beyond building software. We engineer dependable digital foundations. From cloud adoption and DevOps automation to managed IT services and modern web platforms, we design solutions that are secure, scalable, and built for real-world operations."}
             </p>
             <ul className="space-y-4">
   {[
-    'IT Managed Services & 24/7 Monitoring',
-    'Cloud Strategy, Migration & Optimization',
-    'DevOps & CI/CD Automation',
-    'Infrastructure as Code (IaC)',
-    'Application Modernization',
-    'Web & Portal Development',
-    'Security & Compliance Best Practices',
-    'Performance Monitoring & Observability',
-    'Architecture & Technology Consulting',
-    'Support, Maintenance & Continuous Improvement',
+    lang === "ar" ? 'خدمات تقنية مُدارة ومراقبة 24/7' : 'IT Managed Services & 24/7 Monitoring',
+    lang === "ar" ? 'استراتيجية سحابية وهجرة وتحسين' : 'Cloud Strategy, Migration & Optimization',
+    lang === "ar" ? 'أتمتة DevOps و CI/CD' : 'DevOps & CI/CD Automation',
+    lang === "ar" ? 'البنية التحتية ككود (IaC)' : 'Infrastructure as Code (IaC)',
+    lang === "ar" ? 'تحديث التطبيقات' : 'Application Modernization',
+    lang === "ar" ? 'تطوير الويب والبوابات' : 'Web & Portal Development',
+    lang === "ar" ? 'أفضل ممارسات الأمان والامتثال' : 'Security & Compliance Best Practices',
+    lang === "ar" ? 'مراقبة الأداء والرصد' : 'Performance Monitoring & Observability',
+    lang === "ar" ? 'استشارات معمارية وتقنية' : 'Architecture & Technology Consulting',
+    lang === "ar" ? 'الدعم والصيانة والتحسين المستمر' : 'Support, Maintenance & Continuous Improvement',
   ].map((item) => (
     <li key={item} className="flex items-center gap-3 text-gray-300">
       <div className="w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_10px_hsl(var(--primary))]" />

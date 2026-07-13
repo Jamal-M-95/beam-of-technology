@@ -18,3 +18,9 @@ pnpm-debug.log*
 # OS
 .DS_Store
 .env.local
+node_modules
+.next
+.env
+.env.local
+.data
+
