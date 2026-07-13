@@ -289,7 +289,7 @@ export default function Contact() {
     name="country"
     render={({ field }) => (
       <FormItem className="md:col-span-4">
-        <FormLabel className="text-gray-300">{lang === "ar" ? "رقم الهاتف" : "Phone Number"}</FormLabel>
+        <FormLabel className="text-gray-300">{lang === "ar" ? "رمز الدولة" : "Country Code"}</FormLabel>
         <Select value={field.value} onValueChange={field.onChange}>
           <FormControl>
             <SelectTrigger className="bg-black/20 border-white/10 focus:border-primary/50 text-white">
@@ -315,8 +315,8 @@ export default function Contact() {
     name="phone"
     render={({ field }) => (
       <FormItem className="md:col-span-4">
-        <FormLabel className="text-gray-300 opacity-0 select-none">
-          {lang === "ar" ? "الهاتف" : "Phone"}
+        <FormLabel className="text-gray-300">
+          {lang === "ar" ? "رقم الهاتف" : "Phone Number"}
         </FormLabel>
         <FormControl>
           <Input
